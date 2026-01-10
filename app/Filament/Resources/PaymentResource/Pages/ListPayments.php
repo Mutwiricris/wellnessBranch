@@ -13,7 +13,14 @@ class ListPayments extends ListRecords
     protected function getHeaderActions(): array
     {
         return [
-            Actions\CreateAction::make(),
+            // No create action - payments are created automatically via bookings
+        ];
+    }
+
+    protected function getHeaderWidgets(): array
+    {
+        return [
+            // Add payment statistics widgets here later
         ];
     }
 }

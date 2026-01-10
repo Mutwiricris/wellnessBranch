@@ -2,13 +2,17 @@
 
 namespace App\Models;
 
+use App\Domain\Shared\Traits\HasBranchScope;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class Staff extends Model
 {
+    use HasBranchScope;
+
     protected $fillable = [
+        'branch_id',
         'name',
         'email',
         'phone',

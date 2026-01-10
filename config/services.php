@@ -35,4 +35,13 @@ return [
         ],
     ],
 
+    'mpesa' => [
+        'environment' => env('MPESA_ENV', 'sandbox'), // 'sandbox' or 'production'
+        'consumer_key' => env('MPESA_CONSUMER_KEY', ''),
+        'consumer_secret' => env('MPESA_CONSUMER_SECRET', ''),
+        'shortcode' => env('MPESA_SHORTCODE', '174379'), // Default sandbox shortcode
+        'passkey' => env('MPESA_PASSKEY', ''),
+        'callback_url' => env('MPESA_CALLBACK_URL', '/api/mpesa/callback'),
+    ],
+
 ];

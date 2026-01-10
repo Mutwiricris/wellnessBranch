@@ -2,13 +2,16 @@
 
 namespace App\Models;
 
+use App\Domain\Shared\Traits\HasBranchScope;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 class Payment extends Model
 {
+    use HasBranchScope;
     protected $fillable = [
         'booking_id',
+        'pos_transaction_id',
         'amount',
         'payment_method',
         'branch_id',

@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Domain\Shared\Traits\HasBranchScope;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
@@ -10,6 +11,7 @@ use Carbon\Carbon;
 
 class PosTransaction extends Model
 {
+    use HasBranchScope;
     protected $fillable = [
         'transaction_number',
         'branch_id',
@@ -17,6 +19,7 @@ class PosTransaction extends Model
         'client_id',
         'booking_id',
         'transaction_type',
+        'transaction_date',
         'subtotal',
         'discount_amount',
         'tax_amount',
@@ -38,6 +41,7 @@ class PosTransaction extends Model
     ];
 
     protected $casts = [
+        'transaction_date' => 'date',
         'subtotal' => 'decimal:2',
         'discount_amount' => 'decimal:2',
         'tax_amount' => 'decimal:2',
@@ -68,6 +72,11 @@ class PosTransaction extends Model
         return $this->belongsTo(User::class, 'client_id');
     }
 
+    public function customer(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'customer_id');
+    }
+
     public function booking(): BelongsTo
     {
         return $this->belongsTo(Booking::class);
@@ -86,6 +95,11 @@ class PosTransaction extends Model
     public function paymentSplits(): HasMany
     {
         return $this->hasMany(PosPaymentSplit::class);
+    }
+
+    public function payments(): HasMany
+    {
+        return $this->hasMany(Payment::class, 'pos_transaction_id');
     }
 
     public function couponUsages(): HasMany

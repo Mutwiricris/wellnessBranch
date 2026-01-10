@@ -2,224 +2,179 @@
 
 namespace App\Filament\Resources;
 
+use App\Domain\Booking\Services\BookingService;
+use App\Domain\Payment\Services\MpesaService;
+use App\Domain\Payment\Services\PaymentService;
 use App\Filament\Resources\BookingResource\Pages;
-use App\Filament\Resources\BookingResource\RelationManagers;
 use App\Models\Booking;
 use App\Models\Service;
-use App\Models\Staff;
 use App\Models\User;
+use App\Support\Enums\BookingStatus;
+use App\Support\Enums\PaymentMethod;
+use App\Support\Enums\PaymentStatus;
 use Filament\Forms;
 use Filament\Forms\Form;
 use Filament\Resources\Resource;
 use Filament\Tables;
 use Filament\Tables\Table;
+use Filament\Notifications\Notification;
 use Illuminate\Database\Eloquent\Builder;
-use Filament\Support\Enums\FontWeight;
-use Filament\Infolists;
-use Filament\Infolists\Infolist;
-use Carbon\Carbon;
+use Illuminate\Support\Facades\DB;
 
 class BookingResource extends Resource
 {
     protected static ?string $model = Booking::class;
 
     protected static ?string $navigationIcon = 'heroicon-o-calendar-days';
-    
+
     protected static ?string $navigationGroup = 'Bookings';
-    
+
     protected static ?int $navigationSort = 1;
-    
+
     protected static ?string $recordTitleAttribute = 'booking_reference';
-    
-    // Scope bookings to only show those for the current branch
-    public static function getEloquentQuery(): Builder
-    {
-        $tenant = \Filament\Facades\Filament::getTenant();
-        
-        return parent::getEloquentQuery()
-            ->where('branch_id', $tenant->id)
-            ->with(['client', 'service', 'staff', 'payment']);
-    }
+
+    protected static ?string $navigationLabel = 'Bookings';
+
+    protected static ?string $modelLabel = 'Booking';
+
+    protected static ?string $pluralModelLabel = 'Bookings';
 
     public static function form(Form $form): Form
     {
         return $form
             ->schema([
+                Forms\Components\Section::make('Booking Information')
+                    ->description('Select the service, date, and time for this booking')
+                    ->icon('heroicon-o-calendar')
+                    ->schema([
+                        Forms\Components\TextInput::make('booking_reference')
+                            ->label('Booking Reference')
+                            ->default(fn() => 'SPA' . now()->format('ymd') . strtoupper(substr(md5(uniqid()), 0, 6)))
+                            ->disabled()
+                            ->dehydrated()
+                            ->required()
+                            ->columnSpanFull(),
+
+                        Forms\Components\Select::make('service_id')
+                            ->label('Service')
+                            ->relationship('service', 'name')
+                            ->searchable()
+                            ->preload()
+                            ->required()
+                            ->reactive()
+                            ->afterStateUpdated(function ($state, Forms\Set $set) {
+                                if ($state) {
+                                    $service = Service::find($state);
+                                    if ($service) {
+                                        $set('total_amount', $service->price);
+                                    }
+                                }
+                            })
+                            ->helperText('Select the service for this booking')
+                            ->columnSpan(1),
+
+                        Forms\Components\Select::make('staff_id')
+                            ->label('Staff Member')
+                            ->relationship('staff', 'name')
+                            ->searchable()
+                            ->preload()
+                            ->required()
+                            ->helperText('Assign a staff member to this booking')
+                            ->columnSpan(1),
+
+                        Forms\Components\DatePicker::make('appointment_date')
+                            ->label('Appointment Date')
+                            ->required()
+                            ->native(false)
+                            ->displayFormat('M d, Y')
+                            ->minDate(now())
+                            ->helperText('Select the date for the appointment')
+                            ->columnSpan(1),
+
+                        Forms\Components\TimePicker::make('start_time')
+                            ->label('Start Time')
+                            ->required()
+                            ->seconds(false)
+                            ->columnSpan(1),
+
+                        Forms\Components\TimePicker::make('end_time')
+                            ->label('End Time')
+                            ->required()
+                            ->seconds(false)
+                            ->columnSpan(1),
+
+                        Forms\Components\TextInput::make('total_amount')
+                            ->label('Total Amount')
+                            ->required()
+                            ->numeric()
+                            ->prefix('KES')
+                            ->helperText('Total cost for this booking')
+                            ->columnSpan(1),
+                    ])
+                    ->columns(2),
+
                 Forms\Components\Section::make('Client Information')
+                    ->description('Optional - Select or create a client for this booking')
+                    ->icon('heroicon-o-user')
                     ->schema([
                         Forms\Components\Select::make('client_id')
                             ->label('Client')
-                            ->relationship('client', 'first_name')
-                            ->getOptionLabelFromRecordUsing(fn ($record) => $record->first_name . ' ' . $record->last_name . ' (' . $record->email . ')')
+                            ->relationship('client', 'first_name', fn(Builder $query) =>
+                                $query->where('user_type', 'client')
+                            )
                             ->searchable(['first_name', 'last_name', 'email', 'phone'])
-                            ->required()
+                            ->getOptionLabelFromRecordUsing(fn (User $record) =>
+                                "{$record->first_name} {$record->last_name} - {$record->phone}"
+                            )
                             ->preload()
                             ->createOptionForm([
                                 Forms\Components\Grid::make(2)
                                     ->schema([
                                         Forms\Components\TextInput::make('first_name')
                                             ->required()
-                                            ->maxLength(255),
+                                            ->maxLength(255)
+                                            ->live(onBlur: true)
+                                            ->afterStateUpdated(function ($state, Forms\Set $set, Forms\Get $get) {
+                                                $lastName = $get('last_name') ?? '';
+                                                $set('name', trim($state . ' ' . $lastName));
+                                            }),
                                         Forms\Components\TextInput::make('last_name')
                                             ->required()
-                                            ->maxLength(255),
+                                            ->maxLength(255)
+                                            ->live(onBlur: true)
+                                            ->afterStateUpdated(function ($state, Forms\Set $set, Forms\Get $get) {
+                                                $firstName = $get('first_name') ?? '';
+                                                $set('name', trim($firstName . ' ' . $state));
+                                            }),
                                         Forms\Components\TextInput::make('email')
                                             ->email()
-                                            ->unique(User::class, 'email')
-                                            ->required()
-                                            ->maxLength(255),
+                                            ->maxLength(255)
+                                            ->default(fn () => 'noemail_' . \Illuminate\Support\Str::random(10) . '@placeholder.local'),
                                         Forms\Components\TextInput::make('phone')
                                             ->tel()
-                                            ->required()
-                                            ->maxLength(255),
-                                        Forms\Components\Select::make('gender')
-                                            ->options([
-                                                'male' => 'Male',
-                                                'female' => 'Female',
-                                                'other' => 'Other',
-                                                'prefer_not_to_say' => 'Prefer not to say'
-                                            ])
-                                            ->native(false),
-                                        Forms\Components\DatePicker::make('date_of_birth')
-                                            ->maxDate(now()),
-                                        Forms\Components\Textarea::make('allergies')
-                                            ->columnSpanFull()
-                                            ->rows(2),
-                                    ])
+                                            ->maxLength(255)
+                                            ->default('N/A'),
+                                        Forms\Components\Hidden::make('name'),
+                                        Forms\Components\Hidden::make('user_type')
+                                            ->default('client'),
+                                        Forms\Components\Hidden::make('password')
+                                            ->default(fn () => bcrypt(\Illuminate\Support\Str::random(32))),
+                                    ]),
                             ])
-                    ])->columns(1),
-                    
-                Forms\Components\Section::make('Service Details')
+                            ->columnSpanFull(),
+                    ]),
+
+                Forms\Components\Section::make('Additional Details')
+                    ->icon('heroicon-o-document-text')
                     ->schema([
-                        Forms\Components\Select::make('service_id')
-                            ->label('Service')
-                            ->options(function () {
-                                $tenant = \Filament\Facades\Filament::getTenant();
-                                return Service::whereHas('branches', function (Builder $query) use ($tenant) {
-                                    $query->where('branch_id', $tenant->id);
-                                })->pluck('name', 'id');
-                            })
-                            ->required()
-                            ->reactive()
-                            ->afterStateUpdated(function ($state, callable $set) {
-                                if ($state) {
-                                    $service = Service::find($state);
-                                    if ($service) {
-                                        $set('total_amount', $service->price);
-                                        // Calculate end time based on service duration
-                                        $startTime = request()->get('start_time');
-                                        if ($startTime) {
-                                            $endTime = Carbon::parse($startTime)->addMinutes($service->duration ?? 60);
-                                            $set('end_time', $endTime->format('H:i'));
-                                        }
-                                    }
-                                }
-                            })
-                            ->native(false),
-                            
-                        Forms\Components\Select::make('staff_id')
-                            ->label('Staff Member')
-                            ->options(function (Forms\Get $get) {
-                                $tenant = \Filament\Facades\Filament::getTenant();
-                                $serviceId = $get('service_id');
-                                
-                                $query = Staff::whereHas('branches', function (Builder $query) use ($tenant) {
-                                    $query->where('branch_id', $tenant->id);
-                                });
-                                
-                                if ($serviceId) {
-                                    $query->whereHas('services', function (Builder $query) use ($serviceId) {
-                                        $query->where('service_id', $serviceId);
-                                    });
-                                }
-                                
-                                return $query->pluck('name', 'id');
-                            })
-                            ->searchable()
-                            ->preload()
-                            ->native(false),
-                    ])->columns(2),
-                    
-                Forms\Components\Section::make('Appointment Schedule')
-                    ->schema([
-                        Forms\Components\DatePicker::make('appointment_date')
-                            ->required()
-                            ->minDate(now())
-                            ->reactive()
-                            ->afterStateUpdated(function ($state, callable $set) {
-                                // Clear time fields when date changes
-                                $set('start_time', null);
-                                $set('end_time', null);
-                            }),
-                            
-                        Forms\Components\TimePicker::make('start_time')
-                            ->required()
-                            ->reactive()
-                            ->afterStateUpdated(function ($state, callable $set, Forms\Get $get) {
-                                if ($state && $get('service_id')) {
-                                    $service = Service::find($get('service_id'));
-                                    if ($service) {
-                                        $endTime = Carbon::parse($state)->addMinutes($service->duration ?? 60);
-                                        $set('end_time', $endTime->format('H:i'));
-                                    }
-                                }
-                            }),
-                            
-                        Forms\Components\TimePicker::make('end_time')
-                            ->required()
-                            ->afterOrEqual('start_time'),
-                    ])->columns(3),
-                    
-                Forms\Components\Section::make('Booking Details')
-                    ->schema([
-                        Forms\Components\Select::make('status')
-                            ->options([
-                                'pending' => 'Pending',
-                                'confirmed' => 'Confirmed',
-                                'in_progress' => 'In Progress',
-                                'completed' => 'Completed',
-                                'cancelled' => 'Cancelled',
-                                'no_show' => 'No Show'
-                            ])
-                            ->default('pending')
-                            ->required()
-                            ->native(false),
-                            
-                        Forms\Components\Select::make('payment_status')
-                            ->options([
-                                'pending' => 'Pending',
-                                'completed' => 'Completed',
-                                'failed' => 'Failed',
-                                'refunded' => 'Refunded'
-                            ])
-                            ->default('pending')
-                            ->required()
-                            ->native(false),
-                            
-                        Forms\Components\Select::make('payment_method')
-                            ->options([
-                                'cash' => 'Cash',
-                                'mpesa' => 'M-Pesa',
-                                'card' => 'Card',
-                                'bank_transfer' => 'Bank Transfer'
-                            ])
-                            ->native(false),
-                            
-                        Forms\Components\TextInput::make('total_amount')
-                            ->numeric()
-                            ->prefix('KES')
-                            ->step(0.01)
-                            ->required(),
-                            
                         Forms\Components\Textarea::make('notes')
+                            ->label('Booking Notes')
+                            ->placeholder('Any special requests or notes...')
                             ->rows(3)
                             ->columnSpanFull(),
-                            
-                        Forms\Components\Textarea::make('cancellation_reason')
-                            ->rows(2)
-                            ->columnSpanFull()
-                            ->hidden(fn (Forms\Get $get): bool => $get('status') !== 'cancelled'),
-                    ])->columns(2),
+                    ])
+                    ->collapsible()
+                    ->collapsed(),
             ]);
     }
 
@@ -231,359 +186,539 @@ class BookingResource extends Resource
                     ->label('Reference')
                     ->searchable()
                     ->sortable()
-                    ->weight(FontWeight::Bold)
-                    ->copyable(),
-                    
-                Tables\Columns\TextColumn::make('client.first_name')
+                    ->copyable()
+                    ->copyMessage('Reference copied!')
+                    ->weight('medium')
+                    ->icon('heroicon-o-hashtag')
+                    ->iconColor('primary'),
+
+                Tables\Columns\TextColumn::make('client')
                     ->label('Client')
-                    ->formatStateUsing(fn ($record) => $record->client->first_name . ' ' . $record->client->last_name)
                     ->searchable(['first_name', 'last_name'])
-                    ->sortable(),
-                    
+                    ->sortable()
+                    ->formatStateUsing(fn (Booking $record) =>
+                        $record->client->first_name . ' ' . $record->client->last_name
+                    )
+                    ->description(fn (Booking $record) => $record->client->phone)
+                    ->icon('heroicon-o-user')
+                    ->iconColor('gray'),
+
                 Tables\Columns\TextColumn::make('service.name')
-                    ->searchable()
-                    ->sortable(),
-                    
-                Tables\Columns\TextColumn::make('staff.name')
+                    ->label('Service')
                     ->searchable()
                     ->sortable()
-                    ->placeholder('Unassigned'),
-                    
+                    ->icon('heroicon-o-sparkles')
+                    ->iconColor('info')
+                    ->badge()
+                    ->color('info'),
+
+                Tables\Columns\TextColumn::make('staff.name')
+                    ->label('Staff')
+                    ->searchable()
+                    ->sortable()
+                    ->icon('heroicon-o-user-circle')
+                    ->iconColor('success'),
+
                 Tables\Columns\TextColumn::make('appointment_date')
-                    ->date()
-                    ->sortable(),
-                    
-                Tables\Columns\TextColumn::make('start_time')
+                    ->label('Date')
+                    ->date('M d, Y')
+                    ->sortable()
+                    ->icon('heroicon-o-calendar')
+                    ->iconColor('warning'),
+
+                Tables\Columns\TextColumn::make('time')
                     ->label('Time')
-                    ->formatStateUsing(fn ($record) => $record->start_time . ' - ' . $record->end_time)
-                    ->sortable(),
-                    
+                    ->formatStateUsing(fn (Booking $record) =>
+                        date('g:i A', strtotime($record->start_time)) . ' - ' .
+                        date('g:i A', strtotime($record->end_time))
+                    )
+                    ->icon('heroicon-o-clock')
+                    ->iconColor('primary'),
+
                 Tables\Columns\TextColumn::make('status')
                     ->badge()
-                    ->color(fn (string $state): string => match ($state) {
-                        'pending' => 'warning',
-                        'confirmed' => 'info',
-                        'in_progress' => 'primary',
-                        'completed' => 'success',
-                        'cancelled' => 'danger',
-                        'no_show' => 'gray',
-                        default => 'gray'
-                    }),
-                    
+                    ->formatStateUsing(fn (string $state) =>
+                        BookingStatus::from($state)->label()
+                    )
+                    ->color(fn (string $state) =>
+                        BookingStatus::from($state)->color()
+                    )
+                    ->icon(fn (string $state) =>
+                        BookingStatus::from($state)->icon()
+                    )
+                    ->sortable(),
+
                 Tables\Columns\TextColumn::make('payment_status')
                     ->label('Payment')
                     ->badge()
-                    ->color(fn (string $state): string => match ($state) {
-                        'pending' => 'warning',
-                        'completed' => 'success',
-                        'failed' => 'danger',
-                        'refunded' => 'gray',
-                        default => 'gray'
-                    }),
-                    
-                Tables\Columns\TextColumn::make('total_amount')
-                    ->money('KES')
+                    ->formatStateUsing(fn (string $state) =>
+                        PaymentStatus::from($state)->label()
+                    )
+                    ->color(fn (string $state) =>
+                        PaymentStatus::from($state)->color()
+                    )
                     ->sortable(),
-                    
-                Tables\Columns\TextColumn::make('created_at')
-                    ->dateTime()
+
+                Tables\Columns\TextColumn::make('total_amount')
+                    ->label('Amount')
+                    ->money('KES')
                     ->sortable()
-                    ->toggleable(isToggledHiddenByDefault: true),
+                    ->weight('bold')
+                    ->color('success'),
             ])
             ->filters([
                 Tables\Filters\SelectFilter::make('status')
-                    ->options([
-                        'pending' => 'Pending',
-                        'confirmed' => 'Confirmed',
-                        'in_progress' => 'In Progress',
-                        'completed' => 'Completed',
-                        'cancelled' => 'Cancelled',
-                        'no_show' => 'No Show'
-                    ])
-                    ->multiple(),
-                    
+                    ->label('Booking Status')
+                    ->options(BookingStatus::options())
+                    ->multiple()
+                    ->indicator('Status'),
+
                 Tables\Filters\SelectFilter::make('payment_status')
                     ->label('Payment Status')
-                    ->options([
-                        'pending' => 'Pending',
-                        'completed' => 'Completed',
-                        'failed' => 'Failed',
-                        'refunded' => 'Refunded'
-                    ])
-                    ->multiple(),
-                    
-                Tables\Filters\SelectFilter::make('service_id')
-                    ->label('Service')
-                    ->relationship('service', 'name')
-                    ->multiple()
-                    ->preload(),
-                    
-                Tables\Filters\SelectFilter::make('staff_id')
-                    ->label('Staff')
-                    ->relationship('staff', 'name')
-                    ->multiple()
-                    ->preload(),
-                    
+                    ->options(PaymentStatus::options())
+                    ->indicator('Payment'),
+
                 Tables\Filters\Filter::make('appointment_date')
                     ->form([
                         Forms\Components\DatePicker::make('from')
                             ->label('From Date'),
-                        Forms\Components\DatePicker::make('until')
-                            ->label('Until Date'),
+                        Forms\Components\DatePicker::make('to')
+                            ->label('To Date'),
                     ])
                     ->query(function (Builder $query, array $data): Builder {
                         return $query
-                            ->when(
-                                $data['from'],
-                                fn (Builder $query, $date): Builder => $query->whereDate('appointment_date', '>=', $date),
+                            ->when($data['from'], fn (Builder $query, $date) =>
+                                $query->whereDate('appointment_date', '>=', $date)
                             )
-                            ->when(
-                                $data['until'],
-                                fn (Builder $query, $date): Builder => $query->whereDate('appointment_date', '<=', $date),
+                            ->when($data['to'], fn (Builder $query, $date) =>
+                                $query->whereDate('appointment_date', '<=', $date)
                             );
-                    }),
-                    
-                Tables\Filters\Filter::make('today')
-                    ->query(fn (Builder $query): Builder => $query->whereDate('appointment_date', today()))
-                    ->label('Today\'s Appointments'),
-                    
-                Tables\Filters\Filter::make('upcoming')
-                    ->query(fn (Builder $query): Builder => $query->where('appointment_date', '>=', today()))
-                    ->label('Upcoming'),
+                    })
+                    ->indicator('Date Range'),
+
+                Tables\Filters\SelectFilter::make('staff_id')
+                    ->label('Staff Member')
+                    ->relationship('staff', 'name')
+                    ->searchable()
+                    ->preload()
+                    ->indicator('Staff'),
+
+                Tables\Filters\SelectFilter::make('service_id')
+                    ->label('Service')
+                    ->relationship('service', 'name')
+                    ->searchable()
+                    ->preload()
+                    ->indicator('Service'),
             ])
+            ->filtersFormColumns(2)
             ->actions([
-                Tables\Actions\Action::make('confirm_booking')
-                    ->label('Confirm')
-                    ->icon('heroicon-o-check-badge')
-                    ->color('info')
-                    ->visible(fn (Booking $record): bool => $record->canBeConfirmed())
-                    ->requiresConfirmation()
-                    ->modalDescription(fn (Booking $record) => $record->getPaymentStatusMessage())
-                    ->action(function (Booking $record) {
-                        $record->updateStatusWithPayment('confirmed');
-                    }),
-                    
-                Tables\Actions\Action::make('payment_required')
-                    ->label('Payment Required')
-                    ->icon('heroicon-o-exclamation-triangle')
-                    ->color('warning')
-                    ->visible(fn (Booking $record): bool => 
-                        $record->status === 'pending' && $record->requiresPayment()
-                    )
-                    ->url(fn (Booking $record) => route('filament.admin.resources.payments.create', [
-                        'booking_id' => $record->id
-                    ]))
-                    ->openUrlInNewTab(),
-                    
-                Tables\Actions\Action::make('start_service')
-                    ->label('Start')
-                    ->icon('heroicon-o-play')
-                    ->color('success')
-                    ->visible(fn (Booking $record): bool => $record->canBeStarted())
-                    ->requiresConfirmation()
-                    ->modalDescription(fn (Booking $record) => 
-                        $record->hasValidPayment() 
-                            ? 'Ready to start service - payment verified'
-                            : 'Cannot start - payment required'
-                    )
-                    ->action(function (Booking $record) {
-                        $record->updateStatusWithPayment('in_progress');
-                    }),
-                    
-                Tables\Actions\Action::make('complete_service')
-                    ->label('Complete')
-                    ->icon('heroicon-o-check')
-                    ->color('success')
-                    ->visible(fn (Booking $record): bool => $record->canBeCompleted())
-                    ->requiresConfirmation()
-                    ->modalDescription(fn (Booking $record) => 
-                        $record->hasValidPayment() 
-                            ? 'Ready to complete service - payment verified'
-                            : 'Cannot complete - payment required'
-                    )
-                    ->action(function (Booking $record) {
-                        $record->updateStatusWithPayment('completed');
-                    }),
-                    
-                Tables\Actions\Action::make('cancel_booking')
-                    ->label('Cancel')
-                    ->icon('heroicon-o-x-mark')
-                    ->color('danger')
-                    ->visible(fn (Booking $record): bool => $record->canBeCancelled())
-                    ->form([
-                        Forms\Components\Textarea::make('cancellation_reason')
-                            ->label('Cancellation Reason')
-                            ->required()
-                            ->rows(3),
-                    ])
-                    ->action(function (Booking $record, array $data) {
-                        $record->update([
-                            'status' => 'cancelled',
-                            'cancellation_reason' => $data['cancellation_reason'],
-                            'cancelled_at' => now(),
-                        ]);
-                    }),
-                    
-                Tables\Actions\ViewAction::make(),
-                Tables\Actions\EditAction::make(),
-            ])
-            ->bulkActions([
-                Tables\Actions\BulkActionGroup::make([
-                    Tables\Actions\DeleteBulkAction::make(),
-                    
-                    Tables\Actions\BulkAction::make('confirm_bookings')
-                        ->label('Confirm Selected')
+                Tables\Actions\ActionGroup::make([
+                    Tables\Actions\ViewAction::make()
+                        ->color('info'),
+
+                    Tables\Actions\EditAction::make()
+                        ->color('warning'),
+
+                    Tables\Actions\Action::make('record_payment')
+                        ->label('Record Payment')
+                        ->icon('heroicon-o-banknotes')
+                        ->color('success')
+                        ->form([
+                            Forms\Components\Select::make('payment_method')
+                                ->label('Payment Method')
+                                ->options(PaymentMethod::options())
+                                ->required()
+                                ->default(PaymentMethod::CASH->value)
+                                ->live()
+                                ->helperText('Select how the customer is paying'),
+
+                            Forms\Components\TextInput::make('amount')
+                                ->label('Payment Amount')
+                                ->numeric()
+                                ->required()
+                                ->prefix('KES')
+                                ->default(fn (Booking $record) => $record->total_amount)
+                                ->helperText(fn (Booking $record) =>
+                                    'Booking total: KES ' . number_format($record->total_amount, 2)
+                                ),
+
+                            Forms\Components\TextInput::make('mpesa_phone')
+                                ->label('M-Pesa Phone Number')
+                                ->tel()
+                                ->required(fn (Forms\Get $get) => $get('payment_method') === 'mpesa')
+                                ->placeholder('e.g., 0712345678 or 254712345678')
+                                ->helperText('Enter customer phone number to send STK push')
+                                ->visible(fn (Forms\Get $get) => $get('payment_method') === 'mpesa')
+                                ->live()
+                                ->suffixAction(
+                                    Forms\Components\Actions\Action::make('sendStkPush')
+                                        ->label('Send STK Push')
+                                        ->icon('heroicon-o-paper-airplane')
+                                        ->color('success')
+                                        ->disabled(fn (Forms\Get $get) => !$get('mpesa_phone') || !$get('amount'))
+                                        ->requiresConfirmation()
+                                        ->modalHeading('Send M-Pesa STK Push')
+                                        ->modalDescription(fn (Forms\Get $get) =>
+                                            'Send payment request of KES ' . number_format($get('amount') ?? 0, 2) .
+                                            ' to ' . $get('mpesa_phone')
+                                        )
+                                        ->action(function (Forms\Get $get, Forms\Set $set) {
+                                            try {
+                                                $mpesaService = app(MpesaService::class);
+
+                                                // Validate phone number
+                                                if (!$mpesaService->validatePhoneNumber($get('mpesa_phone'))) {
+                                                    Notification::make()
+                                                        ->danger()
+                                                        ->title('Invalid Phone Number')
+                                                        ->body('Please enter a valid Kenyan phone number')
+                                                        ->send();
+                                                    return;
+                                                }
+
+                                                // Send STK push
+                                                $response = $mpesaService->stkPush(
+                                                    phoneNumber: $get('mpesa_phone'),
+                                                    amount: $get('amount'),
+                                                    accountReference: 'BKG-' . time(),
+                                                    transactionDesc: 'Booking Payment'
+                                                );
+
+                                                if ($response['success']) {
+                                                    // Store checkout request ID for later matching
+                                                    $set('mpesa_checkout_request_id', $response['checkout_request_id']);
+
+                                                    Notification::make()
+                                                        ->success()
+                                                        ->title('STK Push Sent!')
+                                                        ->body('Payment request sent to ' . $get('mpesa_phone') .
+                                                               '. Customer should enter M-Pesa PIN on their phone.')
+                                                        ->duration(10000)
+                                                        ->send();
+                                                } else {
+                                                    Notification::make()
+                                                        ->danger()
+                                                        ->title('STK Push Failed')
+                                                        ->body($response['message'] ?? 'Failed to send payment request')
+                                                        ->send();
+                                                }
+                                            } catch (\Exception $e) {
+                                                Notification::make()
+                                                    ->danger()
+                                                    ->title('Error')
+                                                    ->body($e->getMessage())
+                                                    ->send();
+                                            }
+                                        })
+                                ),
+
+                            Forms\Components\Hidden::make('mpesa_checkout_request_id'),
+
+                            Forms\Components\TextInput::make('transaction_reference')
+                                ->label('Transaction Reference')
+                                ->maxLength(255)
+                                ->placeholder('e.g., MPESA123456, AUTH-789012')
+                                ->helperText(fn (Forms\Get $get) =>
+                                    $get('payment_method') === 'mpesa'
+                                        ? 'Optional - Only if you already have the M-Pesa code'
+                                        : 'Optional but recommended for online payments'
+                                )
+                                ->visible(fn (Forms\Get $get) =>
+                                    $get('payment_method') &&
+                                    !PaymentMethod::from($get('payment_method'))->isInstant()
+                                ),
+
+                            Forms\Components\Textarea::make('notes')
+                                ->label('Payment Notes')
+                                ->rows(3)
+                                ->placeholder('Any additional notes about this payment...')
+                                ->columnSpanFull(),
+
+                            Forms\Components\Toggle::make('auto_confirm')
+                                ->label('Auto-confirm Booking')
+                                ->default(true)
+                                ->helperText('Automatically confirm the booking after recording payment')
+                                ->visible(fn (Forms\Get $get) =>
+                                    $get('payment_method') &&
+                                    PaymentMethod::from($get('payment_method'))->isInstant()
+                                ),
+                        ])
+                        ->modalHeading('Record Payment')
+                        ->modalDescription('Record a payment for this booking')
+                        ->modalSubmitActionLabel('Record Payment')
+                        ->visible(fn (Booking $record) =>
+                            $record->status === BookingStatus::PENDING->value &&
+                            $record->payment_status === PaymentStatus::PENDING->value &&
+                            !$record->payment
+                        )
+                        ->action(function (Booking $record, array $data) {
+                            DB::beginTransaction();
+
+                            try {
+                                // Double-check payment doesn't exist
+                                if ($record->payment) {
+                                    throw new \Exception('Payment already exists for this booking');
+                                }
+
+                                // Get branch ID
+                                $branchId = $record->branch_id ?? \Filament\Facades\Filament::getTenant()?->id;
+                                if (!$branchId) {
+                                    throw new \Exception('Unable to determine branch for this payment');
+                                }
+
+                                // Prepare payment data
+                                $paymentData = [
+                                    'booking_id' => $record->id,
+                                    'branch_id' => $branchId,
+                                    'amount' => $data['amount'],
+                                    'payment_method' => $data['payment_method'],
+                                    'transaction_reference' => $data['transaction_reference'] ?? null,
+                                    'notes' => $data['notes'] ?? null,
+                                    'customer_id' => $record->client_id,
+                                    // staff_id is nullable - would need to map user to staff record
+                                ];
+
+                                // Add M-Pesa specific data if STK push was sent
+                                if ($data['payment_method'] === 'mpesa' && !empty($data['mpesa_checkout_request_id'])) {
+                                    $paymentData['mpesa_checkout_request_id'] = $data['mpesa_checkout_request_id'];
+                                    // Force status to PROCESSING for M-Pesa STK push
+                                    $paymentData['status'] = PaymentStatus::PROCESSING->value;
+                                }
+
+                                // Create payment
+                                $paymentService = app(PaymentService::class);
+                                $payment = $paymentService->createPayment($paymentData);
+
+                                $paymentMethod = PaymentMethod::from($data['payment_method']);
+
+                                // Only auto-confirm for instant payments (not M-Pesa with STK push)
+                                $shouldAutoConfirm = ($data['auto_confirm'] ?? false) &&
+                                                    $paymentMethod->isInstant() &&
+                                                    empty($data['mpesa_checkout_request_id']);
+
+                                // Auto-confirm booking if applicable
+                                if ($shouldAutoConfirm) {
+                                    $bookingService = app(BookingService::class);
+                                    $bookingService->confirmBooking($record->id);
+                                }
+
+                                DB::commit();
+
+                                // Show appropriate success notification
+                                if (!empty($data['mpesa_checkout_request_id'])) {
+                                    Notification::make()
+                                        ->success()
+                                        ->title('M-Pesa Payment Initiated')
+                                        ->body('STK push sent. Payment will be confirmed once customer completes the transaction.')
+                                        ->send();
+                                } elseif ($shouldAutoConfirm) {
+                                    Notification::make()
+                                        ->success()
+                                        ->title('Payment Recorded & Booking Confirmed')
+                                        ->body("Payment of KES " . number_format($data['amount'], 2) . " recorded and booking confirmed successfully.")
+                                        ->send();
+                                } elseif ($paymentMethod->isInstant()) {
+                                    Notification::make()
+                                        ->success()
+                                        ->title('Payment Recorded')
+                                        ->body("Payment of KES " . number_format($data['amount'], 2) . " has been recorded successfully.")
+                                        ->send();
+                                } else {
+                                    Notification::make()
+                                        ->success()
+                                        ->title('Payment Recorded')
+                                        ->body("Payment is being processed. Booking will be confirmed once payment clears.")
+                                        ->send();
+                                }
+
+                            } catch (\Exception $e) {
+                                DB::rollBack();
+
+                                Notification::make()
+                                    ->danger()
+                                    ->title('Payment Recording Failed')
+                                    ->body($e->getMessage())
+                                    ->send();
+                            }
+                        }),
+
+                    Tables\Actions\Action::make('confirm')
+                        ->label('Confirm Booking')
+                        ->icon('heroicon-o-check-circle')
+                        ->color('success')
+                        ->requiresConfirmation()
+                        ->modalHeading('Confirm Booking')
+                        ->modalDescription('Are you sure you want to confirm this booking? Payment must be completed first.')
+                        ->modalSubmitActionLabel('Yes, Confirm')
+                        ->visible(fn (Booking $record) =>
+                            $record->status === BookingStatus::PENDING->value
+                        )
+                        ->action(function (Booking $record) {
+                            try {
+                                app(BookingService::class)->confirmBooking($record->id);
+
+                                Notification::make()
+                                    ->success()
+                                    ->title('Booking Confirmed!')
+                                    ->body('The booking has been confirmed successfully.')
+                                    ->send();
+                            } catch (\Exception $e) {
+                                Notification::make()
+                                    ->danger()
+                                    ->title('Confirmation Failed')
+                                    ->body($e->getMessage())
+                                    ->send();
+                            }
+                        }),
+
+                    Tables\Actions\Action::make('start')
+                        ->label('Start Service')
+                        ->icon('heroicon-o-play')
+                        ->color('info')
+                        ->requiresConfirmation()
+                        ->modalHeading('Start Service')
+                        ->modalDescription('Mark this service as started?')
+                        ->modalSubmitActionLabel('Yes, Start')
+                        ->visible(fn (Booking $record) =>
+                            $record->status === BookingStatus::CONFIRMED->value
+                        )
+                        ->action(function (Booking $record) {
+                            try {
+                                app(BookingService::class)->startBooking($record->id);
+
+                                Notification::make()
+                                    ->success()
+                                    ->title('Service Started')
+                                    ->body('The service has been started.')
+                                    ->send();
+                            } catch (\Exception $e) {
+                                Notification::make()
+                                    ->danger()
+                                    ->title('Failed to Start')
+                                    ->body($e->getMessage())
+                                    ->send();
+                            }
+                        }),
+
+                    Tables\Actions\Action::make('complete')
+                        ->label('Complete Service')
                         ->icon('heroicon-o-check-badge')
                         ->color('success')
                         ->requiresConfirmation()
-                        ->action(function ($records) {
-                            $records->each(function (Booking $booking) {
-                                if ($booking->status === 'pending') {
-                                    $booking->updateStatusWithPayment('confirmed');
-                                }
-                            });
+                        ->modalHeading('Complete Service')
+                        ->modalDescription('Mark this booking as completed?')
+                        ->modalSubmitActionLabel('Yes, Complete')
+                        ->visible(fn (Booking $record) =>
+                            $record->status === BookingStatus::IN_PROGRESS->value
+                        )
+                        ->action(function (Booking $record) {
+                            try {
+                                app(BookingService::class)->completeBooking($record->id);
+
+                                Notification::make()
+                                    ->success()
+                                    ->title('Booking Completed!')
+                                    ->body('The booking has been marked as completed.')
+                                    ->send();
+                            } catch (\Exception $e) {
+                                Notification::make()
+                                    ->danger()
+                                    ->title('Failed to Complete')
+                                    ->body($e->getMessage())
+                                    ->send();
+                            }
                         }),
-                        
-                    Tables\Actions\BulkAction::make('cancel_bookings')
-                        ->label('Cancel Selected')
-                        ->icon('heroicon-o-x-mark')
+
+                    Tables\Actions\Action::make('cancel')
+                        ->label('Cancel Booking')
+                        ->icon('heroicon-o-x-circle')
                         ->color('danger')
+                        ->requiresConfirmation()
+                        ->modalHeading('Cancel Booking')
+                        ->modalDescription('Please provide a reason for cancellation.')
                         ->form([
                             Forms\Components\Textarea::make('cancellation_reason')
                                 ->label('Cancellation Reason')
                                 ->required()
-                                ->rows(3),
+                                ->rows(3)
+                                ->placeholder('Please explain why this booking is being cancelled...'),
                         ])
-                        ->requiresConfirmation()
-                        ->action(function ($records, array $data) {
-                            $records->each(function (Booking $booking) use ($data) {
-                                if ($booking->canBeCancelled()) {
-                                    $booking->update([
-                                        'status' => 'cancelled',
-                                        'cancellation_reason' => $data['cancellation_reason'],
-                                        'cancelled_at' => now(),
-                                    ]);
-                                }
-                            });
+                        ->visible(fn (Booking $record) =>
+                            in_array($record->status, [
+                                BookingStatus::PENDING->value,
+                                BookingStatus::CONFIRMED->value
+                            ])
+                        )
+                        ->action(function (Booking $record, array $data) {
+                            try {
+                                app(BookingService::class)->cancelBooking(
+                                    $record->id,
+                                    $data['cancellation_reason']
+                                );
+
+                                Notification::make()
+                                    ->success()
+                                    ->title('Booking Cancelled')
+                                    ->body('The booking has been cancelled.')
+                                    ->send();
+                            } catch (\Exception $e) {
+                                Notification::make()
+                                    ->danger()
+                                    ->title('Cancellation Failed')
+                                    ->body($e->getMessage())
+                                    ->send();
+                            }
                         }),
+
+                    Tables\Actions\Action::make('no_show')
+                        ->label('Mark as No-Show')
+                        ->icon('heroicon-o-user-minus')
+                        ->color('warning')
+                        ->requiresConfirmation()
+                        ->modalHeading('Mark as No-Show')
+                        ->modalDescription('This client did not show up for their appointment?')
+                        ->modalSubmitActionLabel('Yes, No-Show')
+                        ->visible(fn (Booking $record) =>
+                            $record->status === BookingStatus::CONFIRMED->value
+                        )
+                        ->action(function (Booking $record) {
+                            try {
+                                app(BookingService::class)->markAsNoShow($record->id);
+
+                                Notification::make()
+                                    ->warning()
+                                    ->title('Marked as No-Show')
+                                    ->body('The booking has been marked as no-show.')
+                                    ->send();
+                            } catch (\Exception $e) {
+                                Notification::make()
+                                    ->danger()
+                                    ->title('Failed')
+                                    ->body($e->getMessage())
+                                    ->send();
+                            }
+                        }),
+                ])
+                ->label('Actions')
+                ->icon('heroicon-m-ellipsis-vertical')
+                ->button(),
+            ])
+            ->bulkActions([
+                Tables\Actions\BulkActionGroup::make([
+                    Tables\Actions\DeleteBulkAction::make(),
                 ]),
             ])
             ->defaultSort('appointment_date', 'desc')
-            ->groups([
-                Tables\Grouping\Group::make('appointment_date')
-                    ->label('Date')
-                    ->date()
-                    ->collapsible(),
-                Tables\Grouping\Group::make('status')
-                    ->label('Status')
-                    ->collapsible(),
-                Tables\Grouping\Group::make('staff.name')
-                    ->label('Staff')
-                    ->collapsible(),
+            ->poll('30s')
+            ->emptyStateHeading('No bookings yet')
+            ->emptyStateDescription('Create your first booking to get started.')
+            ->emptyStateIcon('heroicon-o-calendar-days')
+            ->emptyStateActions([
+                Tables\Actions\CreateAction::make()
+                    ->label('Create Booking')
+                    ->icon('heroicon-o-plus'),
             ])
-            ->recordUrl(
-                fn (Booking $record): string => BookingResource::getUrl('view', ['record' => $record])
-            );
-    }
-
-    public static function infolist(Infolist $infolist): Infolist
-    {
-        return $infolist
-            ->schema([
-                Infolists\Components\Section::make('Booking Information')
-                    ->schema([
-                        Infolists\Components\TextEntry::make('booking_reference')
-                            ->label('Reference')
-                            ->copyable()
-                            ->weight(FontWeight::Bold),
-                        Infolists\Components\TextEntry::make('status')
-                            ->badge()
-                            ->color(fn (string $state): string => match ($state) {
-                                'pending' => 'warning',
-                                'confirmed' => 'info',
-                                'in_progress' => 'primary',
-                                'completed' => 'success',
-                                'cancelled' => 'danger',
-                                'no_show' => 'gray',
-                                default => 'gray'
-                            }),
-                        Infolists\Components\TextEntry::make('created_at')
-                            ->label('Booked On')
-                            ->dateTime(),
-                        Infolists\Components\TextEntry::make('confirmed_at')
-                            ->label('Confirmed At')
-                            ->dateTime()
-                            ->placeholder('Not confirmed'),
-                    ])->columns(2),
-                    
-                Infolists\Components\Section::make('Client Details')
-                    ->schema([
-                        Infolists\Components\TextEntry::make('client.first_name')
-                            ->label('Name')
-                            ->formatStateUsing(fn ($record) => $record->client->first_name . ' ' . $record->client->last_name),
-                        Infolists\Components\TextEntry::make('client.email')
-                            ->label('Email')
-                            ->copyable(),
-                        Infolists\Components\TextEntry::make('client.phone')
-                            ->label('Phone')
-                            ->copyable(),
-                        Infolists\Components\TextEntry::make('client.allergies')
-                            ->label('Allergies')
-                            ->placeholder('None specified'),
-                    ])->columns(2),
-                    
-                Infolists\Components\Section::make('Service Details')
-                    ->schema([
-                        Infolists\Components\TextEntry::make('service.name')
-                            ->label('Service'),
-                        Infolists\Components\TextEntry::make('staff.name')
-                            ->label('Staff')
-                            ->placeholder('Unassigned'),
-                        Infolists\Components\TextEntry::make('appointment_date')
-                            ->label('Date')
-                            ->date(),
-                        Infolists\Components\TextEntry::make('start_time')
-                            ->label('Time')
-                            ->formatStateUsing(fn ($record) => $record->start_time . ' - ' . $record->end_time),
-                    ])->columns(2),
-                    
-                Infolists\Components\Section::make('Payment Information')
-                    ->schema([
-                        Infolists\Components\TextEntry::make('total_amount')
-                            ->label('Amount')
-                            ->money('KES'),
-                        Infolists\Components\TextEntry::make('payment_status')
-                            ->label('Status')
-                            ->badge()
-                            ->color(fn (string $state): string => match ($state) {
-                                'pending' => 'warning',
-                                'completed' => 'success',
-                                'failed' => 'danger',
-                                'refunded' => 'gray',
-                                default => 'gray'
-                            }),
-                        Infolists\Components\TextEntry::make('payment_method')
-                            ->label('Method')
-                            ->formatStateUsing(fn (?string $state): string => $state ? ucfirst(str_replace('_', ' ', $state)) : 'Not specified'),
-                        Infolists\Components\TextEntry::make('mpesa_transaction_id')
-                            ->label('M-Pesa Transaction ID')
-                            ->placeholder('N/A')
-                            ->copyable(),
-                    ])->columns(2),
-                    
-                Infolists\Components\Section::make('Additional Information')
-                    ->schema([
-                        Infolists\Components\TextEntry::make('notes')
-                            ->label('Notes')
-                            ->placeholder('No notes')
-                            ->columnSpanFull(),
-                        Infolists\Components\TextEntry::make('cancellation_reason')
-                            ->label('Cancellation Reason')
-                            ->placeholder('N/A')
-                            ->visible(fn ($record) => $record->status === 'cancelled')
-                            ->columnSpanFull(),
-                    ])->columns(1),
-            ]);
+            ->striped();
     }
 
     public static function getRelations(): array
@@ -600,32 +735,27 @@ class BookingResource extends Resource
             'create' => Pages\CreateBooking::route('/create'),
             'view' => Pages\ViewBooking::route('/{record}'),
             'edit' => Pages\EditBooking::route('/{record}/edit'),
-            'calendar' => Pages\CalendarBookings::route('/calendar'),
         ];
     }
-    
+
     public static function getNavigationBadge(): ?string
     {
-        try {
-            $tenant = \Filament\Facades\Filament::getTenant();
-            
-            if (!$tenant || !auth()->check()) {
-                return null;
-            }
-            
-            $count = static::getModel()::where('branch_id', $tenant->id)
-                ->whereDate('appointment_date', today())
-                ->whereIn('status', ['pending', 'confirmed'])
-                ->count();
-                
-            return $count > 0 ? (string) $count : null;
-        } catch (\Exception $e) {
-            return null;
-        }
+        $tenant = \Filament\Facades\Filament::getTenant();
+        if (!$tenant) return null;
+
+        return (string) Booking::where('branch_id', $tenant->id)
+            ->where('appointment_date', now()->toDateString())
+            ->whereIn('status', ['pending', 'confirmed'])
+            ->count();
     }
-    
+
     public static function getNavigationBadgeColor(): ?string
     {
         return 'warning';
+    }
+
+    public static function getNavigationBadgeTooltip(): ?string
+    {
+        return 'Today\'s pending and confirmed bookings';
     }
 }

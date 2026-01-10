@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Domain\Shared\Traits\HasBranchScope;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
@@ -9,6 +10,8 @@ use Carbon\Carbon;
 
 class InventoryItem extends Model
 {
+    use HasBranchScope;
+
     protected $fillable = [
         'branch_id',
         'name',

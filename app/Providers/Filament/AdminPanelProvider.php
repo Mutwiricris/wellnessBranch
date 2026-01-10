@@ -24,7 +24,6 @@ class AdminPanelProvider extends PanelProvider
     public function panel(Panel $panel): Panel
     {
         return $panel
-            ->default()
             ->id('admin')
             ->path('admin')
             ->login()
@@ -39,6 +38,7 @@ class AdminPanelProvider extends PanelProvider
             ->discoverPages(in: app_path('Filament/Pages'), for: 'App\\Filament\\Pages')
             ->pages([
                 Pages\Dashboard::class,
+                \App\Filament\Pages\POS\PosTerminal::class,
             ])
             ->discoverWidgets(in: app_path('Filament/Widgets'), for: 'App\\Filament\\Widgets')
             ->widgets([
@@ -60,8 +60,11 @@ class AdminPanelProvider extends PanelProvider
                 Authenticate::class,
             ])
             ->tenant(Branch::class)
+            ->tenantMiddleware([
+                \App\Http\Middleware\ApplyBranchScope::class,
+            ])
             ->profile()
-            ->databaseNotifications()
+            // ->databaseNotifications()
             ->navigationGroups([
                 'E-commerce',
                 'Inventory',

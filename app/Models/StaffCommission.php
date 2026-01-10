@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Domain\Shared\Traits\HasBranchScope;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -9,7 +10,7 @@ use Carbon\Carbon;
 
 class StaffCommission extends Model
 {
-    use HasFactory;
+    use HasFactory, HasBranchScope;
 
     protected $fillable = [
         'staff_id',

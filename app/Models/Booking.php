@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Domain\Shared\Traits\HasBranchScope;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasOne;
@@ -9,6 +10,7 @@ use Illuminate\Support\Str;
 
 class Booking extends Model
 {
+    use HasBranchScope;
     protected $fillable = [
         'booking_reference',
         'branch_id',

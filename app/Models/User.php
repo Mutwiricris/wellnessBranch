@@ -247,8 +247,8 @@ class User extends Authenticatable implements FilamentUser, HasTenants
         if ($this->user_type === 'branch_manager' && $this->branch_id) {
             return Branch::where('id', $this->branch_id)->active()->get();
         }
-        
-        return collect();
+
+        return new Collection();
     }
 
     /**

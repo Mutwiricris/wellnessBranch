@@ -2,11 +2,14 @@
 
 namespace App\Models;
 
+use App\Domain\Shared\Traits\HasBranchScope;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 class InventoryTransaction extends Model
 {
+    use HasBranchScope;
+
     protected $fillable = [
         'inventory_item_id',
         'branch_id',
