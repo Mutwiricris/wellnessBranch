@@ -9,9 +9,7 @@ use Illuminate\Contracts\Pagination\LengthAwarePaginator;
 
 class BookingRepository extends BaseRepository implements BookingRepositoryInterface
 {
-    /**
-     * Resolve the Booking model
-     */
+
     protected function resolveModel(): Booking
     {
         return new Booking();
