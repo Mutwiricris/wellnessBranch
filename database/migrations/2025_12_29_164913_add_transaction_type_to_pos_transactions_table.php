@@ -11,9 +11,11 @@ return new class extends Migration
      */
     public function up(): void
     {
-        Schema::table('pos_transactions', function (Blueprint $table) {
-            $table->string('transaction_type', 20)->default('mixed')->after('branch_id');
-        });
+        if (!Schema::hasColumn('pos_transactions', 'transaction_type')) {
+            Schema::table('pos_transactions', function (Blueprint $table) {
+                $table->string('transaction_type', 20)->default('mixed')->after('branch_id');
+            });
+        }
     }
 
     /**

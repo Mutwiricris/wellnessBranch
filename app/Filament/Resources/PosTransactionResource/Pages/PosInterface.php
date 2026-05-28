@@ -8,6 +8,7 @@ use App\Models\InventoryItem;
 use App\Models\Staff;
 use App\Models\PosTransaction;
 use App\Models\User;
+use App\Domain\Payment\Services\PaymentService;
 use Filament\Resources\Pages\Page;
 use Filament\Actions\Action;
 use Filament\Notifications\Notification;
@@ -217,7 +218,7 @@ class PosInterface extends Page
         $this->totalAmount = $this->subtotal + $this->taxAmount + $this->tipAmount - $this->discountAmount;
     }
 
-    public function processPayment()
+    public function processPayment(PaymentService $paymentService)
     {
         if (empty($this->cart)) {
             Notification::make()
@@ -279,6 +280,13 @@ class PosInterface extends Page
 
             if ($this->paymentMethod === 'cash') {
                 $transaction->markAsCompleted();
+                
+                // Create payment record
+                $paymentService->processPosPayment($transaction, [
+                    'payment_method' => $this->paymentMethod,
+                    'amount' => $this->totalAmount,
+                ]);
+
                 $this->handlePaymentSuccess($transaction);
             } elseif ($this->paymentMethod === 'mpesa') {
                 $this->initiateMpesaPayment($transaction);
@@ -320,7 +328,7 @@ class PosInterface extends Page
     }
 
     #[On('mpesa-payment-success')]
-    public function handleMpesaSuccess($transactionId, $mpesaTransactionId)
+    public function handleMpesaSuccess(PaymentService $paymentService, $transactionId, $mpesaTransactionId)
     {
         $transaction = PosTransaction::find($transactionId);
         
@@ -331,6 +339,16 @@ class PosInterface extends Page
             ]);
             
             $transaction->markAsCompleted();
+
+            // Update payment record
+            $payment = $transaction->payments()->where('payment_method', 'mpesa')->latest()->first();
+            if ($payment) {
+                $paymentService->updatePaymentStatus($payment->id, 'completed', [
+                    'mpesa_transaction_id' => $mpesaTransactionId,
+                    'processed_at' => now(),
+                ]);
+            }
+
             $this->handlePaymentSuccess($transaction);
         }
     }

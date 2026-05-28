@@ -47,26 +47,30 @@ return new class extends Migration
             }
             if (!Schema::hasColumn('payments', 'customer_id')) {
                 $table->unsignedBigInteger('customer_id')->nullable()->after('payment_channel');
+            } else {
+                $table->unsignedBigInteger('customer_id')->nullable()->change();
             }
             if (!Schema::hasColumn('payments', 'staff_id')) {
                 $table->unsignedBigInteger('staff_id')->nullable()->after('customer_id');
+            } else {
+                $table->unsignedBigInteger('staff_id')->nullable()->change();
             }
         });
 
         // Add foreign keys separately to avoid constraint errors
         // Check if foreign keys don't already exist before adding
-        $sm = Schema::getConnection()->getDoctrineSchemaManager();
-        $indexesFound = $sm->listTableIndexes('payments');
+        $indexes = Schema::getIndexes('payments');
+        $indexNames = array_column($indexes, 'name');
 
-        Schema::table('payments', function (Blueprint $table) use ($indexesFound) {
-            if (Schema::hasColumn('payments', 'customer_id') && !isset($indexesFound['payments_customer_id_foreign'])) {
+        Schema::table('payments', function (Blueprint $table) use ($indexNames) {
+            if (Schema::hasColumn('payments', 'customer_id') && !in_array('payments_customer_id_foreign', $indexNames)) {
                 try {
                     $table->foreign('customer_id')->references('id')->on('users')->onDelete('set null');
                 } catch (\Exception $e) {
                     // Foreign key might already exist or fail for other reasons
                 }
             }
-            if (Schema::hasColumn('payments', 'staff_id') && !isset($indexesFound['payments_staff_id_foreign'])) {
+            if (Schema::hasColumn('payments', 'staff_id') && !in_array('payments_staff_id_foreign', $indexNames)) {
                 try {
                     $table->foreign('staff_id')->references('id')->on('staff')->onDelete('set null');
                 } catch (\Exception $e) {

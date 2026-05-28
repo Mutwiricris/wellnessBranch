@@ -126,7 +126,7 @@ class User extends Authenticatable implements FilamentUser, HasTenants
      */
     public function isAdmin(): bool
     {
-        return $this->user_type === 'admin';
+        return in_array($this->user_type, ['admin', 'director']);
     }
 
     /**
@@ -142,7 +142,7 @@ class User extends Authenticatable implements FilamentUser, HasTenants
      */
     public function isUser(): bool
     {
-        return $this->user_type === 'user';
+        return $this->user_type === 'user' || $this->user_type === 'client';
     }
 
     /**
@@ -158,7 +158,7 @@ class User extends Authenticatable implements FilamentUser, HasTenants
      */
     public function canAccessAdmin(): bool
     {
-        return in_array($this->user_type, ['admin', 'staff', 'branch_manager']);
+        return in_array($this->user_type, ['admin', 'staff', 'branch_manager', 'director']);
     }
 
     /**
@@ -214,9 +214,8 @@ class User extends Authenticatable implements FilamentUser, HasTenants
      */
     public function canAccessPanel(Panel $panel): bool
     {
-        // Only allow branch managers to access the admin panel
         if ($panel->getId() === 'admin') {
-            return $this->user_type === 'branch_manager';
+            return $this->canAccessAdmin();
         }
         
         return false;
@@ -243,8 +242,18 @@ class User extends Authenticatable implements FilamentUser, HasTenants
      */
     public function getTenants(Panel $panel): Collection
     {
-        // Only branch managers can access branches in this system
-        if ($this->user_type === 'branch_manager' && $this->branch_id) {
+        // Admins can access all active branches
+        if ($this->isAdmin()) {
+            return Branch::active()->get();
+        }
+
+        // Branch managers can only access their assigned branch
+        if ($this->isBranchManager() && $this->branch_id) {
+            return Branch::where('id', $this->branch_id)->active()->get();
+        }
+
+        // Staff can access their assigned branch
+        if ($this->isStaff() && $this->branch_id) {
             return Branch::where('id', $this->branch_id)->active()->get();
         }
 
@@ -261,8 +270,13 @@ class User extends Authenticatable implements FilamentUser, HasTenants
             return false;
         }
         
-        // Only branch managers can access branches, and only their assigned branch
-        if ($this->user_type === 'branch_manager') {
+        // Admins can access any branch
+        if ($this->isAdmin()) {
+            return true;
+        }
+
+        // Branch managers and staff can only access their assigned branch
+        if (in_array($this->user_type, ['branch_manager', 'staff'])) {
             return $this->branch_id === $tenant->id;
         }
         

@@ -73,7 +73,7 @@ class PosService
                 'staff_id' => $metadata['staff_id'] ?? null, // Nullable - for tracking service provider
                 'transaction_type' => $metadata['transaction_type'] ?? 'sale',
                 'status' => 'pending',
-                'payment_status' => 'unpaid',
+                'payment_status' => 'pending',
                 'payment_method' => $metadata['payment_method'] ?? null,
                 'subtotal' => $subtotal,
                 'discount_amount' => $discountAmount,
@@ -345,11 +345,9 @@ class PosService
     private function determinePaymentStatus(float $amountPaid, float $totalAmount): string
     {
         if ($amountPaid == 0) {
-            return 'unpaid';
+            return 'pending';
         } elseif ($amountPaid >= $totalAmount) {
-            return 'paid';
-        } elseif ($amountPaid > $totalAmount) {
-            return 'overpaid';
+            return 'completed';
         } else {
             return 'partial';
         }

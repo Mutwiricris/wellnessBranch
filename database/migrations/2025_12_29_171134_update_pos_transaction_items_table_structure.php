@@ -11,8 +11,10 @@ return new class extends Migration
      */
     public function up(): void
     {
-        // Make product_id nullable
-        \DB::statement('ALTER TABLE `pos_transaction_items` MODIFY `product_id` BIGINT UNSIGNED NULL');
+        // Make product_id nullable if it exists
+        if (Schema::hasColumn('pos_transaction_items', 'product_id')) {
+            \DB::statement('ALTER TABLE `pos_transaction_items` MODIFY `product_id` BIGINT UNSIGNED NULL');
+        }
 
         // Rename 'total' to 'total_price' if 'total' exists and 'total_price' doesn't
         if (Schema::hasColumn('pos_transaction_items', 'total') && !Schema::hasColumn('pos_transaction_items', 'total_price')) {

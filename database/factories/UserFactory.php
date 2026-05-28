@@ -28,6 +28,7 @@ class UserFactory extends Factory
             'last_name' => fake()->lastName(),
             'email' => fake()->unique()->safeEmail(),
             'phone' => '+254' . fake()->numerify('7########'),
+            'user_type' => 'user',
             'allergies' => fake()->randomElement(['None', 'Nuts', 'Dairy', 'Gluten', 'Shellfish']),
             'date_of_birth' => fake()->dateTimeBetween('-60 years', '-18 years')->format('Y-m-d'),
             'gender' => fake()->randomElement(['male', 'female', 'other', 'prefer_not_to_say']),
