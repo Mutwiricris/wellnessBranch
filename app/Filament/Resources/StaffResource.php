@@ -16,6 +16,8 @@ use Illuminate\Database\Eloquent\Builder;
 class StaffResource extends Resource
 {
     protected static ?string $model = Staff::class;
+    
+    protected static ?string $tenantOwnershipRelationshipName = 'branches';
 
     protected static ?string $navigationIcon = 'heroicon-o-user-group';
 
@@ -116,7 +118,7 @@ class StaffResource extends Resource
                     ])
                     ->columns(2),
 
-                Forms\Components\Section::make('Services & Branches')
+                 Forms\Components\Section::make('Services & Branches')
                     ->description('Assign services and branches')
                     ->icon('heroicon-o-clipboard-document-list')
                     ->schema([
@@ -138,6 +140,84 @@ class StaffResource extends Resource
                             ->helperText('Branches where this staff member works')
                             ->columnSpanFull(),
                     ]),
+
+                Forms\Components\Section::make('Payment & Compensation')
+                    ->description('Staff payment and salary details (Read-only for branch manager)')
+                    ->icon('heroicon-o-currency-dollar')
+                    ->schema([
+                        Forms\Components\Select::make('payment_type')
+                            ->options([
+                                'salary' => 'Salary (Fixed Monthly)',
+                                'hourly' => 'Hourly Rate',
+                                'commission_only' => 'Commission Only',
+                            ])
+                            ->default('salary')
+                            ->disabled(),
+
+                        Forms\Components\TextInput::make('base_salary')
+                            ->label('Base Salary')
+                            ->numeric()
+                            ->prefix('KES')
+                            ->disabled(),
+                    ])->columns(2),
+
+                Forms\Components\Section::make('Commission Structure')
+                    ->description('Assigned commission structures (Read-only for branch manager)')
+                    ->icon('heroicon-o-calculator')
+                    ->schema([
+                        Forms\Components\Repeater::make('commissionAssignments')
+                            ->relationship('commissionAssignments')
+                            ->schema([
+                                Forms\Components\Select::make('commission_structure_id')
+                                    ->label('Commission Structure')
+                                    ->relationship('commissionStructure', 'name')
+                                    ->disabled(),
+
+                                Forms\Components\DatePicker::make('effective_from')
+                                    ->label('Effective From')
+                                    ->disabled(),
+
+                                Forms\Components\DatePicker::make('effective_to')
+                                    ->label('Effective Until')
+                                    ->disabled(),
+
+                                Forms\Components\Toggle::make('is_active')
+                                    ->label('Active')
+                                    ->disabled(),
+                            ])
+                            ->columns(2)
+                            ->disabled()
+                            ->columnSpanFull(),
+                    ]),
+
+                Forms\Components\Section::make('Banking & Tax Information')
+                    ->description('Required for payroll processing (Read-only for branch manager)')
+                    ->icon('heroicon-o-building-library')
+                    ->schema([
+                        Forms\Components\TextInput::make('bank_name')
+                            ->label('Bank Name')
+                            ->disabled(),
+
+                        Forms\Components\TextInput::make('bank_account_number')
+                            ->label('Account Number')
+                            ->disabled(),
+
+                        Forms\Components\TextInput::make('bank_branch')
+                            ->label('Branch')
+                            ->disabled(),
+
+                        Forms\Components\TextInput::make('kra_pin')
+                            ->label('KRA PIN')
+                            ->disabled(),
+
+                        Forms\Components\TextInput::make('nssf_number')
+                            ->label('NSSF Number')
+                            ->disabled(),
+
+                        Forms\Components\TextInput::make('nhif_number')
+                            ->label('NHIF Number')
+                            ->disabled(),
+                    ])->columns(3),
             ]);
     }
 

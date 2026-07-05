@@ -2,16 +2,14 @@
 
 namespace App\Models;
 
-use App\Domain\Shared\Traits\HasBranchScope;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Support\Facades\DB;
 use Carbon\Carbon;
 
 class InventoryItem extends Model
 {
-    use HasBranchScope;
-
     protected $fillable = [
         'branch_id',
         'name',
@@ -103,57 +101,79 @@ class InventoryItem extends Model
 
     public function addStock(int $quantity, string $notes = null, int $staffId = null): void
     {
-        $this->current_stock += $quantity;
-        $this->last_restocked = now();
-        $this->save();
+        if ($quantity <= 0) {
+            throw new \InvalidArgumentException('Quantity must be positive');
+        }
+        
+        if ($staffId && !Staff::find($staffId)) {
+            throw new \InvalidArgumentException('Invalid staff ID');
+        }
+        
+        DB::transaction(function () use ($quantity, $notes, $staffId) {
+            $this->current_stock += $quantity;
+            $this->last_restocked = now();
+            $this->save();
 
-        $this->transactions()->create([
-            'branch_id' => $this->branch_id,
-            'transaction_type' => 'in',
-            'quantity' => $quantity,
-            'unit_cost' => $this->cost_price,
-            'staff_id' => $staffId,
-            'notes' => $notes,
-            'transaction_date' => now()
-        ]);
+            $this->transactions()->create([
+                'branch_id' => $this->branch_id,
+                'transaction_type' => 'in',
+                'quantity' => $quantity,
+                'unit_cost' => $this->cost_price,
+                'staff_id' => $staffId,
+                'notes' => $notes,
+                'transaction_date' => now()
+            ]);
+        });
     }
 
     public function consumeStock(int $quantity, string $referenceType = null, int $referenceId = null, int $staffId = null): bool
     {
+        if ($quantity <= 0) {
+            throw new \InvalidArgumentException('Quantity must be positive');
+        }
+        
         if ($this->current_stock < $quantity) {
             return false;
         }
 
-        $this->current_stock -= $quantity;
-        $this->save();
+        DB::transaction(function () use ($quantity, $referenceType, $referenceId, $staffId) {
+            $this->current_stock -= $quantity;
+            $this->save();
 
-        $this->transactions()->create([
-            'branch_id' => $this->branch_id,
-            'transaction_type' => 'out',
-            'quantity' => -$quantity,
-            'reference_type' => $referenceType,
-            'reference_id' => $referenceId,
-            'staff_id' => $staffId,
-            'transaction_date' => now()
-        ]);
+            $this->transactions()->create([
+                'branch_id' => $this->branch_id,
+                'transaction_type' => 'out',
+                'quantity' => -$quantity,
+                'reference_type' => $referenceType,
+                'reference_id' => $referenceId,
+                'staff_id' => $staffId,
+                'transaction_date' => now()
+            ]);
+        });
 
         return true;
     }
 
     public function adjustStock(int $newQuantity, string $reason = null, int $staffId = null): void
     {
-        $difference = $newQuantity - $this->current_stock;
-        $this->current_stock = $newQuantity;
-        $this->save();
+        if ($newQuantity < 0) {
+            throw new \InvalidArgumentException('Stock quantity cannot be negative');
+        }
+        
+        DB::transaction(function () use ($newQuantity, $reason, $staffId) {
+            $difference = $newQuantity - $this->current_stock;
+            $this->current_stock = $newQuantity;
+            $this->save();
 
-        $this->transactions()->create([
-            'branch_id' => $this->branch_id,
-            'transaction_type' => 'adjustment',
-            'quantity' => $difference,
-            'staff_id' => $staffId,
-            'notes' => $reason,
-            'transaction_date' => now()
-        ]);
+            $this->transactions()->create([
+                'branch_id' => $this->branch_id,
+                'transaction_type' => 'adjustment',
+                'quantity' => $difference,
+                'staff_id' => $staffId,
+                'notes' => $reason,
+                'transaction_date' => now()
+            ]);
+        });
     }
 
     public function getStockValue(): float

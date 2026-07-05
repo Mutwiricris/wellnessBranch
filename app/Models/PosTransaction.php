@@ -2,7 +2,6 @@
 
 namespace App\Models;
 
-use App\Domain\Shared\Traits\HasBranchScope;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
@@ -11,7 +10,6 @@ use Carbon\Carbon;
 
 class PosTransaction extends Model
 {
-    use HasBranchScope;
     protected $fillable = [
         'transaction_number',
         'branch_id',
@@ -19,7 +17,6 @@ class PosTransaction extends Model
         'client_id',
         'booking_id',
         'transaction_type',
-        'transaction_date',
         'subtotal',
         'discount_amount',
         'tax_amount',
@@ -37,11 +34,11 @@ class PosTransaction extends Model
         'coupon_discount_amount',
         'voucher_discount_amount',
         'loyalty_points_used',
-        'loyalty_points_earned'
+        'loyalty_points_earned',
+        'transaction_date'
     ];
 
     protected $casts = [
-        'transaction_date' => 'date',
         'subtotal' => 'decimal:2',
         'discount_amount' => 'decimal:2',
         'tax_amount' => 'decimal:2',
@@ -51,6 +48,7 @@ class PosTransaction extends Model
         'customer_info' => 'array',
         'receipt_sent' => 'boolean',
         'completed_at' => 'datetime',
+        'transaction_date' => 'datetime',
         'coupon_discount_amount' => 'decimal:2',
         'voucher_discount_amount' => 'decimal:2',
         'loyalty_points_used' => 'integer',
@@ -74,7 +72,7 @@ class PosTransaction extends Model
 
     public function customer(): BelongsTo
     {
-        return $this->belongsTo(User::class, 'customer_id');
+        return $this->belongsTo(User::class, 'client_id');
     }
 
     public function booking(): BelongsTo
@@ -97,11 +95,6 @@ class PosTransaction extends Model
         return $this->hasMany(PosPaymentSplit::class);
     }
 
-    public function payments(): HasMany
-    {
-        return $this->hasMany(Payment::class, 'pos_transaction_id');
-    }
-
     public function couponUsages(): HasMany
     {
         return $this->hasMany(CouponUsage::class);
@@ -112,12 +105,20 @@ class PosTransaction extends Model
         return $this->hasMany(LoyaltyPoint::class);
     }
 
+    public function payments(): HasMany
+    {
+        return $this->hasMany(Payment::class, 'pos_transaction_id');
+    }
+
     protected static function boot()
     {
         parent::boot();
 
         static::creating(function ($transaction) {
             $transaction->transaction_number = static::generateTransactionNumber();
+            if (!$transaction->transaction_date) {
+                $transaction->transaction_date = now();
+            }
         });
     }
 
@@ -255,28 +256,39 @@ class PosTransaction extends Model
                     'staff' => $item->assignedStaff?->name
                 ];
             }),
-            'staff' => $this->staff->name,
-            'branch' => $this->branch->name
+            'staff' => $this->staff?->name ?? 'System',
+            'branch' => $this->branch?->name ?? 'N/A'
         ];
     }
 
     public static function getDailySummary(int $branchId, Carbon $date): array
     {
-        $transactions = static::where('branch_id', $branchId)
+        // Use database aggregation instead of collection operations for better performance
+        $summary = static::where('branch_id', $branchId)
             ->whereDate('created_at', $date)
-            ->with('items')
-            ->get();
+            ->selectRaw('
+                COUNT(*) as total_transactions,
+                SUM(CASE WHEN payment_status = "completed" THEN 1 ELSE 0 END) as completed_transactions,
+                SUM(CASE WHEN payment_status = "completed" THEN total_amount ELSE 0 END) as total_revenue,
+                SUM(CASE WHEN payment_status = "completed" AND payment_method = "cash" THEN total_amount ELSE 0 END) as cash_sales,
+                SUM(CASE WHEN payment_status = "completed" AND payment_method = "mpesa" THEN total_amount ELSE 0 END) as mpesa_sales,
+                SUM(CASE WHEN payment_status = "completed" AND transaction_type = "service" THEN total_amount ELSE 0 END) as service_revenue,
+                SUM(discount_amount) as total_discounts,
+                SUM(tip_amount) as total_tips,
+                AVG(CASE WHEN payment_status = "completed" THEN total_amount END) as avg_transaction_value
+            ')
+            ->first();
 
         return [
-            'total_transactions' => $transactions->count(),
-            'completed_transactions' => $transactions->where('payment_status', 'completed')->count(),
-            'total_revenue' => $transactions->where('payment_status', 'completed')->sum('total_amount'),
-            'cash_sales' => $transactions->where('payment_method', 'cash')->where('payment_status', 'completed')->sum('total_amount'),
-            'mpesa_sales' => $transactions->where('payment_method', 'mpesa')->where('payment_status', 'completed')->sum('total_amount'),
-            'service_revenue' => $transactions->where('transaction_type', 'service')->where('payment_status', 'completed')->sum('total_amount'),
-            'total_discounts' => $transactions->sum('discount_amount'),
-            'total_tips' => $transactions->sum('tip_amount'),
-            'avg_transaction_value' => $transactions->where('payment_status', 'completed')->avg('total_amount') ?? 0
+            'total_transactions' => $summary->total_transactions ?? 0,
+            'completed_transactions' => $summary->completed_transactions ?? 0,
+            'total_revenue' => $summary->total_revenue ?? 0,
+            'cash_sales' => $summary->cash_sales ?? 0,
+            'mpesa_sales' => $summary->mpesa_sales ?? 0,
+            'service_revenue' => $summary->service_revenue ?? 0,
+            'total_discounts' => $summary->total_discounts ?? 0,
+            'total_tips' => $summary->total_tips ?? 0,
+            'avg_transaction_value' => $summary->avg_transaction_value ?? 0
         ];
     }
 

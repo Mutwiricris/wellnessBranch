@@ -38,65 +38,103 @@ class MpesaWebhookController extends Controller
             $payment = Payment::where('mpesa_checkout_request_id', $callbackData['checkout_request_id'])
                 ->first();
 
-            if (!$payment) {
-                Log::warning('Payment not found for M-Pesa callback', [
-                    'checkout_request_id' => $callbackData['checkout_request_id']
-                ]);
+            if ($payment) {
+                // Check if transaction was successful
+                if ($callbackData['success'] ?? false) {
+                    // Transaction successful - update payment
+                    $this->paymentService->updatePaymentStatus(
+                        $payment->id,
+                        PaymentStatus::COMPLETED->value,
+                        [
+                            'mpesa_transaction_id' => $callbackData['mpesa_receipt_number'] ?? null,
+                            'transaction_reference' => $callbackData['mpesa_receipt_number'] ?? null,
+                            'gateway_response' => $callbackData,
+                        ]
+                    );
 
-                return response()->json([
-                    'ResultCode' => 1,
-                    'ResultDesc' => 'Payment record not found'
-                ]);
-            }
+                    Log::info('Payment updated to COMPLETED', [
+                        'payment_id' => $payment->id,
+                        'mpesa_receipt' => $callbackData['mpesa_receipt_number'] ?? null
+                    ]);
 
-            // Check if transaction was successful
-            if ($callbackData['result_code'] === 0) {
-                // Transaction successful - update payment
-                $this->paymentService->updatePaymentStatus(
-                    $payment->id,
-                    PaymentStatus::COMPLETED->value,
-                    [
-                        'mpesa_transaction_id' => $callbackData['mpesa_receipt_number'] ?? null,
-                        'transaction_reference' => $callbackData['mpesa_receipt_number'] ?? null,
-                        'gateway_response' => $callbackData,
-                    ]
-                );
+                    // Auto-confirm booking if payment is completed
+                    if ($payment->booking && $payment->booking->status === 'pending') {
+                        try {
+                            $this->bookingService->confirmBooking($payment->booking_id);
 
-                Log::info('Payment updated to COMPLETED', [
-                    'payment_id' => $payment->id,
-                    'mpesa_receipt' => $callbackData['mpesa_receipt_number'] ?? null
-                ]);
-
-                // Auto-confirm booking if payment is completed
-                if ($payment->booking && $payment->booking->status === 'pending') {
-                    try {
-                        $this->bookingService->confirmBooking($payment->booking_id);
-
-                        Log::info('Booking auto-confirmed after payment', [
-                            'booking_id' => $payment->booking_id
-                        ]);
-                    } catch (\Exception $e) {
-                        Log::error('Failed to auto-confirm booking', [
-                            'booking_id' => $payment->booking_id,
-                            'error' => $e->getMessage()
-                        ]);
+                            Log::info('Booking auto-confirmed after payment', [
+                                'booking_id' => $payment->booking_id
+                            ]);
+                        } catch (\Exception $e) {
+                            Log::error('Failed to auto-confirm booking', [
+                                'booking_id' => $payment->booking_id,
+                                'error' => $e->getMessage()
+                            ]);
+                        }
                     }
+                } else {
+                    // Transaction failed - update payment
+                    $this->paymentService->updatePaymentStatus(
+                        $payment->id,
+                        PaymentStatus::FAILED->value,
+                        [
+                            'gateway_response' => $callbackData,
+                            'notes' => $callbackData['result_desc'] ?? 'Transaction failed'
+                        ]
+                    );
+
+                    Log::info('Payment marked as FAILED', [
+                        'payment_id' => $payment->id,
+                        'reason' => $callbackData['result_desc'] ?? 'Unknown'
+                    ]);
                 }
             } else {
-                // Transaction failed - update payment
-                $this->paymentService->updatePaymentStatus(
-                    $payment->id,
-                    PaymentStatus::FAILED->value,
-                    [
-                        'gateway_response' => $callbackData,
-                        'notes' => $callbackData['result_desc'] ?? 'Transaction failed'
-                    ]
-                );
+                // Check if it is a subscription transaction
+                $mpesaTransaction = \App\Models\MpesaTransaction::where('checkout_request_id', $callbackData['checkout_request_id'])->first();
 
-                Log::info('Payment marked as FAILED', [
-                    'payment_id' => $payment->id,
-                    'reason' => $callbackData['result_desc'] ?? 'Unknown'
-                ]);
+                if (!$mpesaTransaction) {
+                    Log::warning('Payment/Transaction not found for M-Pesa callback', [
+                        'checkout_request_id' => $callbackData['checkout_request_id']
+                    ]);
+
+                    return response()->json([
+                        'ResultCode' => 1,
+                        'ResultDesc' => 'Payment record not found'
+                    ]);
+                }
+
+                // Update MpesaTransaction from Safaricom callback body
+                $mpesaTransaction->updateFromCallback($request->all());
+
+                if ($mpesaTransaction->isSuccessful()) {
+                    if ($mpesaTransaction->subscription_id) {
+                        $subscription = \App\Models\Subscription::find($mpesaTransaction->subscription_id);
+                        if ($subscription) {
+                            \Illuminate\Support\Facades\DB::transaction(function () use ($subscription, $mpesaTransaction, $callbackData) {
+                                // Update subscription status to active
+                                $subscription->update([
+                                    'status' => 'active',
+                                    'last_payment_at' => now(),
+                                    'next_billing_at' => now()->addMonth(),
+                                ]);
+
+                                // Create subscription payment record
+                                \App\Models\SubscriptionPayment::create([
+                                    'subscription_id' => $subscription->id,
+                                    'amount' => $mpesaTransaction->amount,
+                                    'payment_method' => 'mpesa',
+                                    'transaction_reference' => $callbackData['mpesa_receipt_number'] ?? $mpesaTransaction->merchant_request_id,
+                                    'status' => 'completed',
+                                    'payment_details' => $callbackData,
+                                ]);
+                            });
+
+                            Log::info("Subscription {$subscription->id} activated via M-Pesa webhook callback.");
+                        }
+                    }
+                } else {
+                    Log::info("MpesaTransaction {$mpesaTransaction->id} failed in webhook callback.");
+                }
             }
 
             // Respond to M-Pesa

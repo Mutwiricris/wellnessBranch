@@ -32,6 +32,8 @@ class PosTerminal extends Page
     public ?string $customerName = null;
     public string $customerSearch = '';
     public array $customerSearchResults = [];
+    public string $walkinName = 'Walk-in Customer';
+    public string $walkinPhone = '';
 
     // Payment state
     public bool $showPaymentModal = false;
@@ -41,6 +43,7 @@ class PosTerminal extends Page
     public bool $processingPayment = false;
     public ?string $paymentStatus = null;
     public ?string $paymentMessage = null;
+    public ?int $activeTransactionId = null;
 
     // UI state
     public string $activeTab = 'services';
@@ -84,8 +87,14 @@ class PosTerminal extends Page
         ];
         $this->customerId = null;
         $this->customerName = null;
+        $this->walkinName = 'Walk-in Customer';
+        $this->walkinPhone = '';
         $this->paymentMethod = 'cash';
         $this->paymentSplits = [];
+        $this->activeTransactionId = null;
+        $this->processingPayment = false;
+        $this->paymentStatus = null;
+        $this->paymentMessage = null;
     }
 
     /**
@@ -419,6 +428,10 @@ class PosTerminal extends Page
                     'staff_id' => null, // Staff member assigned to service items (not the cashier)
                     'payment_method' => $this->paymentMethod,
                     'transaction_type' => $this->determineTransactionType(),
+                    'customer_info' => $this->customerId ? null : [
+                        'name' => $this->walkinName ?: 'Walk-in Customer',
+                        'phone' => $this->walkinPhone ?: null,
+                    ],
                 ]
             );
 
@@ -460,19 +473,15 @@ class PosTerminal extends Page
 
             $transaction = $posService->processPayment($transaction->id, $paymentData);
 
+            $this->activeTransactionId = $transaction->id;
             $this->paymentStatus = 'pending';
-            $this->paymentMessage = 'Please check your phone and enter M-Pesa PIN to complete payment';
+            $this->paymentMessage = 'Please check your phone, enter your M-Pesa PIN, and wait for confirmation.';
 
             Notification::make()
                 ->info()
-                ->title('M-Pesa STK Push sent')
+                ->title('M-Pesa STK Push Sent')
                 ->body('Please check your phone and enter your M-Pesa PIN')
-                ->persistent()
                 ->send();
-
-            // Note: In production, you would poll for payment status or use webhooks
-            // For now, we'll simulate completion after a delay
-            $this->simulateMpesaCompletion($transaction);
 
         } catch (Exception $e) {
             throw $e;
@@ -480,15 +489,34 @@ class PosTerminal extends Page
     }
 
     /**
-     * Simulate M-Pesa payment completion (for demo)
+     * Poll payment status in the database (called via wire:poll in frontend)
      */
-    private function simulateMpesaCompletion($transaction): void
+    public function checkMpesaPaymentStatus(): void
     {
-        // In production, this would be handled by M-Pesa callback
-        // For demo, we'll mark it as completed
-        sleep(2);
+        if (!$this->activeTransactionId) {
+            return;
+        }
 
-        $this->completeTransaction($transaction);
+        $payment = \App\Models\Payment::where('pos_transaction_id', $this->activeTransactionId)->first();
+
+        if ($payment) {
+            if ($payment->status === 'completed' || $payment->status === 'paid') {
+                $transaction = \App\Models\PosTransaction::find($this->activeTransactionId);
+                $this->completeTransaction($transaction);
+                $this->activeTransactionId = null;
+            } elseif ($payment->status === 'failed') {
+                $this->processingPayment = false;
+                $this->paymentStatus = 'failed';
+                $this->paymentMessage = 'Payment failed: ' . ($payment->notes ?? 'Transaction was cancelled or timed out.');
+                $this->activeTransactionId = null;
+
+                Notification::make()
+                    ->danger()
+                    ->title('M-Pesa Payment Failed')
+                    ->body($this->paymentMessage)
+                    ->send();
+            }
+        }
     }
 
     /**
@@ -607,12 +635,15 @@ class PosTerminal extends Page
      */
     public function getServicesProperty()
     {
-        $query = Service::query()
-            ->where('status', 'active')
-            ->orderBy('name');
+        $tenant = Filament::getTenant();
+        if (!$tenant) {
+            return collect();
+        }
+
+        $query = $tenant->activeServices()->orderBy('services.name');
 
         if ($this->searchTerm) {
-            $query->where('name', 'like', "%{$this->searchTerm}%");
+            $query->where('services.name', 'like', "%{$this->searchTerm}%");
         }
 
         if ($this->selectedCategoryId) {
@@ -636,18 +667,27 @@ class PosTerminal extends Page
 
         $productRepository = app(ProductRepositoryInterface::class);
 
-        $query = $productRepository->getActive();
+        // Fetch products available in the current branch
+        $products = $productRepository->getAvailableInBranch($tenant->id);
 
+        // Filter by search term
         if ($this->searchTerm) {
-            $query = $query->where('name', 'like', "%{$this->searchTerm}%");
+            $searchTerm = strtolower($this->searchTerm);
+            $products = $products->filter(function ($product) use ($searchTerm) {
+                return str_contains(strtolower($product->name), $searchTerm) || 
+                       str_contains(strtolower($product->sku ?? ''), $searchTerm);
+            });
         }
 
-        // Filter by products available in current branch
-        return $query->whereHas('branchInventory', function ($q) use ($tenant) {
-            $q->where('branch_id', $tenant->id)
-                ->where('is_available', true)
-                ->where('quantity_on_hand', '>', 0);
-        })->get();
+        // Filter by category
+        if ($this->selectedCategoryId) {
+            $categoryId = $this->selectedCategoryId;
+            $products = $products->filter(function ($product) use ($categoryId) {
+                return $product->categories->contains('id', $categoryId);
+            });
+        }
+
+        return $products;
     }
 
     /**

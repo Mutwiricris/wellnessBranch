@@ -70,6 +70,7 @@ class PosService
             $transactionData = [
                 'branch_id' => $branchId,
                 'customer_id' => $metadata['customer_id'] ?? null,
+                'client_id' => $metadata['customer_id'] ?? $metadata['client_id'] ?? null,
                 'staff_id' => $metadata['staff_id'] ?? null, // Nullable - for tracking service provider
                 'transaction_type' => $metadata['transaction_type'] ?? 'sale',
                 'status' => 'pending',
@@ -83,6 +84,7 @@ class PosService
                 'amount_paid' => 0,
                 'amount_due' => $totalAmount,
                 'notes' => $metadata['notes'] ?? null,
+                'customer_info' => $metadata['customer_info'] ?? null,
                 'items' => $items,
             ];
 

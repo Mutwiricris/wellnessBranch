@@ -2,16 +2,16 @@
 
 namespace App\Models;
 
-use App\Domain\Shared\Traits\HasBranchScope;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Support\Facades\DB;
 use Carbon\Carbon;
 
 class GiftVoucher extends Model
 {
-    use HasFactory, HasBranchScope;
+    use HasFactory;
 
     protected $fillable = [
         'branch_id',
@@ -103,31 +103,39 @@ class GiftVoucher extends Model
     // Apply voucher to transaction
     public function applyToTransaction(float $amount): float
     {
+        if ($amount <= 0) {
+            throw new \InvalidArgumentException('Amount must be positive');
+        }
+        
         if (!$this->isValid()) {
-            throw new \Exception('Voucher is not valid for use');
+            throw new \DomainException('Voucher is not valid for use');
         }
 
-        $discountAmount = min($amount, $this->remaining_amount);
+        $discountAmount = 0;
         
-        // Update remaining amount
-        $this->remaining_amount -= $discountAmount;
-        
-        // Update redemption history
-        $history = $this->redemption_history ?? [];
-        $history[] = [
-            'amount_used' => $discountAmount,
-            'used_at' => now(),
-            'remaining_after' => $this->remaining_amount
-        ];
-        $this->redemption_history = $history;
-        
-        // Update status and last used
-        if ($this->remaining_amount <= 0) {
-            $this->status = 'redeemed';
-        }
-        $this->last_used_at = now();
-        
-        $this->save();
+        DB::transaction(function () use ($amount, &$discountAmount) {
+            $discountAmount = min($amount, $this->remaining_amount);
+            
+            // Update remaining amount
+            $this->remaining_amount -= $discountAmount;
+            
+            // Update redemption history
+            $history = $this->redemption_history ?? [];
+            $history[] = [
+                'amount_used' => $discountAmount,
+                'used_at' => now()->toIso8601String(),
+                'remaining_after' => $this->remaining_amount
+            ];
+            $this->redemption_history = $history;
+            
+            // Update status and last used
+            if ($this->remaining_amount <= 0) {
+                $this->status = 'redeemed';
+            }
+            $this->last_used_at = now();
+            
+            $this->save();
+        });
         
         return $discountAmount;
     }

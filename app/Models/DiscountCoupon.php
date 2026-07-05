@@ -2,16 +2,16 @@
 
 namespace App\Models;
 
-use App\Domain\Shared\Traits\HasBranchScope;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Support\Facades\DB;
 use Carbon\Carbon;
 
 class DiscountCoupon extends Model
 {
-    use HasFactory, HasBranchScope;
+    use HasFactory;
 
     protected $fillable = [
         'branch_id',
@@ -153,11 +153,16 @@ class DiscountCoupon extends Model
 
         // Check hour restrictions
         if (!empty($restrictions['hours'])) {
-            $currentHour = $now->format('H:i');
+            $currentTime = $now->format('H:i');
             $startTime = $restrictions['hours']['start'] ?? '00:00';
             $endTime = $restrictions['hours']['end'] ?? '23:59';
             
-            if ($currentHour < $startTime || $currentHour > $endTime) {
+            // Convert to timestamps for proper comparison
+            $current = Carbon::createFromFormat('H:i', $currentTime);
+            $start = Carbon::createFromFormat('H:i', $startTime);
+            $end = Carbon::createFromFormat('H:i', $endTime);
+            
+            if ($current->lt($start) || $current->gt($end)) {
                 return false;
             }
         }
@@ -192,31 +197,37 @@ class DiscountCoupon extends Model
     // Apply coupon and track usage
     public function applyCoupon(float $subtotal, ?int $customerId = null, ?int $transactionId = null): float
     {
+        if ($subtotal <= 0) {
+            throw new \InvalidArgumentException('Subtotal must be positive');
+        }
+        
         if (!$this->isValid() || !$this->isValidAtCurrentTime()) {
-            throw new \Exception('Coupon is not valid for use at this time');
+            throw new \DomainException('Coupon is not valid for use at this time');
         }
 
         if (!$this->canBeUsedByCustomer($customerId)) {
-            throw new \Exception('Customer has exceeded usage limit for this coupon');
+            throw new \DomainException('Customer has exceeded usage limit for this coupon');
         }
 
         $discountAmount = $this->calculateDiscountAmount($subtotal);
 
         if ($discountAmount <= 0) {
-            throw new \Exception('Order does not meet minimum amount requirement');
+            throw new \DomainException('Order does not meet minimum amount requirement');
         }
 
-        // Track coupon usage
-        CouponUsage::create([
-            'discount_coupon_id' => $this->id,
-            'customer_id' => $customerId,
-            'pos_transaction_id' => $transactionId,
-            'discount_amount' => $discountAmount,
-            'used_at' => now()
-        ]);
+        DB::transaction(function () use ($customerId, $transactionId, $discountAmount) {
+            // Track coupon usage
+            CouponUsage::create([
+                'discount_coupon_id' => $this->id,
+                'customer_id' => $customerId,
+                'pos_transaction_id' => $transactionId,
+                'discount_amount' => $discountAmount,
+                'used_at' => now()
+            ]);
 
-        // Increment usage count
-        $this->increment('used_count');
+            // Increment usage count
+            $this->increment('used_count');
+        });
 
         return $discountAmount;
     }

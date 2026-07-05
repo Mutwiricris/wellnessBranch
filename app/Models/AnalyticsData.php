@@ -89,7 +89,9 @@ class AnalyticsData extends Model
         $bookings = Booking::where('branch_id', $branchId)
             ->whereDate('appointment_date', $date);
 
-        $payments = Payment::where('branch_id', $branchId)
+        $payments = Payment::whereHas('booking', function ($q) use ($branchId) {
+                $q->where('branch_id', $branchId);
+            })
             ->whereDate('created_at', $date)
             ->where('status', 'completed');
 

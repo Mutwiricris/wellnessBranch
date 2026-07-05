@@ -2,19 +2,19 @@
 
 namespace App\Models;
 
-use App\Domain\Shared\Traits\HasBranchScope;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Builder;
 
 class Payment extends Model
 {
-    use HasBranchScope;
     protected $fillable = [
+        'branch_id',
         'booking_id',
         'pos_transaction_id',
         'amount',
         'payment_method',
-        'branch_id',
+        'payment_category',
         'transaction_reference',
         'mpesa_checkout_request_id',
         'mpesa_transaction_id',
@@ -42,8 +42,28 @@ class Payment extends Model
         'net_amount' => 'decimal:2',
         'processed_at' => 'datetime',
         'refunded_at' => 'datetime',
-        'gateway_response' => 'array',
+        'gateway_response' => 'array'
     ];
+
+    protected static function boot()
+    {
+        parent::boot();
+        
+        // Apply branch scoping only in Filament context
+        if (app()->runningInConsole() === false && class_exists('\Filament\Facades\Filament')) {
+            static::addGlobalScope('branch', function (Builder $builder) {
+                $tenant = \Filament\Facades\Filament::getTenant();
+                if ($tenant) {
+                    $builder->where(function ($query) use ($tenant) {
+                        $query->where('branch_id', $tenant->id)
+                            ->orWhereHas('booking', function ($q) use ($tenant) {
+                                $q->where('branch_id', $tenant->id);
+                            });
+                    });
+                }
+            });
+        }
+    }
 
     public function booking(): BelongsTo
     {
@@ -243,7 +263,16 @@ public function branch(): BelongsTo
 
     public function scopeByBranch($query, int $branchId)
     {
-        return $query->where('branch_id', $branchId);
+        return $query->whereHas('booking', function ($q) use ($branchId) {
+            $q->where('branch_id', $branchId);
+        });
+    }
+
+
+    // Method to tell Filament this model doesn't support direct tenant scoping
+    public static function isTenantAware(): bool
+    {
+        return false;
     }
 
     public function scopeToday($query)

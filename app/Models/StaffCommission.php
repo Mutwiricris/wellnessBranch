@@ -2,7 +2,6 @@
 
 namespace App\Models;
 
-use App\Domain\Shared\Traits\HasBranchScope;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -10,12 +9,13 @@ use Carbon\Carbon;
 
 class StaffCommission extends Model
 {
-    use HasFactory, HasBranchScope;
+    use HasFactory;
 
     protected $fillable = [
         'staff_id',
         'branch_id',
         'booking_id',
+        'commission_structure_id',
         'service_id',
         'commission_type',
         'commission_rate',
@@ -28,6 +28,8 @@ class StaffCommission extends Model
         'penalty_amount',
         'total_earning',
         'payment_status',
+        'period_start',
+        'period_end',
         'earned_date',
         'payment_date',
         'payment_method',
@@ -35,7 +37,6 @@ class StaffCommission extends Model
         'bonuses',
         'penalties',
         'quality_multiplier',
-        'approval_status',
         'approved_by',
         'approved_at',
         'approval_notes',
@@ -56,6 +57,7 @@ class StaffCommission extends Model
         'quality_multiplier' => 'decimal:2',
         'earned_date' => 'date',
         'payment_date' => 'date',
+        'hold_until' => 'date',
         'approved_at' => 'datetime',
         'tiered_structure' => 'array',
         'bonuses' => 'array',
@@ -90,6 +92,16 @@ class StaffCommission extends Model
         return $this->belongsTo(User::class, 'approved_by');
     }
 
+    public function commissionStructure(): BelongsTo
+    {
+        return $this->belongsTo(CommissionStructure::class);
+    }
+
+    public function payroll(): BelongsTo
+    {
+        return $this->belongsTo(Payroll::class);
+    }
+
     // Scopes
     public function scopePending($query)
     {
@@ -103,7 +115,7 @@ class StaffCommission extends Model
 
     public function scopeApproved($query)
     {
-        return $query->where('approval_status', 'approved');
+        return $query->where('payment_status', 'approved');
     }
 
     public function scopeForStaff($query, $staffId)
@@ -136,22 +148,58 @@ class StaffCommission extends Model
         // Get commission structure from staff or service
         $structure = $commissionStructure ?? self::getCommissionStructure($staff, $booking->service);
         
+        // If it's a model instance, normalize it to an array for the switch statement
+        if ($structure instanceof CommissionStructure) {
+            $rules = $structure->rules ?? [];
+            $type = $structure->type;
+            
+            $normalizedStructure = [
+                'type' => $type,
+                'rate' => $rules['percentage'] ?? 0,
+                'amount' => $rules['fixed_amount'] ?? 0,
+                'tiers' => $rules['tiers'] ?? [],
+                'fixed_amount' => $rules['fixed_amount'] ?? 0,
+                'percentage_rate' => $rules['percentage'] ?? 0,
+                'min_transaction' => $rules['min_transaction'] ?? 0,
+            ];
+            $structure = $normalizedStructure;
+        }
+        
+        // Check for minimum transaction amount
+        if (isset($structure['min_transaction']) && $serviceAmount < $structure['min_transaction']) {
+            return [
+                'commission_type' => $structure['type'],
+                'commission_rate' => 0,
+                'fixed_amount' => 0,
+                'tiered_structure' => $structure['tiers'] ?? null,
+                'service_amount' => $serviceAmount,
+                'commission_amount' => 0,
+                'quality_multiplier' => 1.0,
+                'calculation_details' => [
+                    'error' => "Service amount {$serviceAmount} is less than minimum transaction amount {$structure['min_transaction']}"
+                ],
+                'total_earning' => 0
+            ];
+        }
+        
         switch ($structure['type']) {
             case 'percentage':
-                $commissionAmount = $serviceAmount * ($structure['rate'] / 100);
+                $rate = (float) ($structure['rate'] ?? $structure['percentage_rate'] ?? 0);
+                $commissionAmount = $serviceAmount * ($rate / 100);
                 $calculationDetails = [
                     'type' => 'percentage',
-                    'rate' => $structure['rate'],
+                    'rate' => $rate,
                     'service_amount' => $serviceAmount,
-                    'calculation' => "{$serviceAmount} * {$structure['rate']}% = {$commissionAmount}"
+                    'calculation' => "{$serviceAmount} * {$rate}% = {$commissionAmount}"
                 ];
                 break;
 
             case 'fixed':
-                $commissionAmount = $structure['amount'];
+                $amount = (float) ($structure['amount'] ?? $structure['fixed_amount'] ?? 0);
+                $commissionAmount = $amount;
                 $calculationDetails = [
                     'type' => 'fixed',
-                    'amount' => $structure['amount'],
+                    'amount' => $amount,
                     'calculation' => "Fixed amount: {$commissionAmount}"
                 ];
                 break;
@@ -168,13 +216,14 @@ class StaffCommission extends Model
 
             case 'hybrid':
                 // Combination of fixed + percentage
-                $baseAmount = $structure['fixed_amount'] ?? 0;
-                $percentageAmount = $serviceAmount * (($structure['percentage_rate'] ?? 0) / 100);
+                $baseAmount = (float) ($structure['fixed_amount'] ?? 0);
+                $rate = (float) ($structure['percentage_rate'] ?? $structure['rate'] ?? 0);
+                $percentageAmount = $serviceAmount * ($rate / 100);
                 $commissionAmount = $baseAmount + $percentageAmount;
                 $calculationDetails = [
                     'type' => 'hybrid',
                     'fixed_amount' => $baseAmount,
-                    'percentage_rate' => $structure['percentage_rate'] ?? 0,
+                    'percentage_rate' => $rate,
                     'percentage_amount' => $percentageAmount,
                     'total_commission' => $commissionAmount
                 ];
@@ -187,8 +236,8 @@ class StaffCommission extends Model
 
         return [
             'commission_type' => $structure['type'],
-            'commission_rate' => $structure['rate'] ?? null,
-            'fixed_amount' => $structure['amount'] ?? null,
+            'commission_rate' => $structure['rate'] ?? $structure['percentage_rate'] ?? null,
+            'fixed_amount' => $structure['amount'] ?? $structure['fixed_amount'] ?? null,
             'tiered_structure' => $structure['tiers'] ?? null,
             'service_amount' => $serviceAmount,
             'commission_amount' => $finalCommission,
@@ -253,8 +302,13 @@ class StaffCommission extends Model
         // Base multiplier
         $multiplier = 1.0;
 
+        // Check if StaffPerformance model exists before attempting to use it
+        if (!class_exists('App\Models\StaffPerformance')) {
+            return $multiplier;
+        }
+
         // Get recent performance metrics for this staff member
-        $recentPerformance = StaffPerformance::where('staff_id', $staff->id)
+        $recentPerformance = \App\Models\StaffPerformance::where('staff_id', $staff->id)
             ->where('performance_date', '>=', now()->subDays(30))
             ->avg('average_rating');
 
@@ -287,7 +341,7 @@ class StaffCommission extends Model
     public function approve($approvedBy, $notes = null)
     {
         $this->update([
-            'approval_status' => 'approved',
+            'payment_status' => 'approved',
             'approved_by' => $approvedBy,
             'approved_at' => now(),
             'approval_notes' => $notes
@@ -297,7 +351,7 @@ class StaffCommission extends Model
     public function reject($approvedBy, $notes)
     {
         $this->update([
-            'approval_status' => 'rejected',
+            'payment_status' => 'rejected',
             'approved_by' => $approvedBy,
             'approved_at' => now(),
             'approval_notes' => $notes
@@ -320,8 +374,7 @@ class StaffCommission extends Model
     public static function getPendingCommissions($staffId)
     {
         return self::where('staff_id', $staffId)
-            ->where('payment_status', 'pending')
-            ->where('approval_status', 'approved')
+            ->where('payment_status', 'approved')
             ->sum('total_earning');
     }
 

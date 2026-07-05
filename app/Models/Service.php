@@ -57,14 +57,21 @@ class Service extends Model
         return $this->hasMany(Booking::class);
     }
 
+    public function membershipTiers(): BelongsToMany
+    {
+        return $this->belongsToMany(MembershipTier::class, 'membership_tier_services')
+            ->withPivot(['is_unlimited', 'allocated_quantity'])
+            ->withTimestamps();
+    }
+
     public function scopeActive($query)
     {
         return $query->where('status', 'active');
     }
 
-    public function getFormattedPriceAttribute()
+    public function getFormattedPriceAttribute(): string
     {
-        return '$' . number_format($this->price, 2);
+        return 'KES ' . number_format($this->price, 2);
     }
 
     public function getDurationAttribute()

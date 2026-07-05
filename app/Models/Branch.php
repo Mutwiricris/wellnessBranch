@@ -2,29 +2,34 @@
 
 namespace App\Models;
 
-use Filament\Models\Contracts\FilamentUser;
-use Filament\Models\Contracts\HasTenants;
-use Filament\Panel;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
-use Illuminate\Support\Collection;
+use Illuminate\Database\Eloquent\Relations\HasManyThrough;
 
 class Branch extends Model
 {
     protected $fillable = [
+        'user_id',
         'name',
         'address',
         'phone',
         'email',
         'working_hours',
         'timezone',
-        'status'
+        'status',
+        'payment_settings'
     ];
 
     protected $casts = [
-        'working_hours' => 'array'
+        'working_hours' => 'array',
+        'payment_settings' => 'array'
     ];
+
+    public function owner()
+    {
+        return $this->belongsTo(User::class, 'user_id');
+    }
 
     public function services(): BelongsToMany
     {
@@ -54,9 +59,12 @@ class Branch extends Model
         return $this->hasMany(Booking::class);
     }
 
-    public function managers(): HasMany
+    public function managers(): BelongsToMany
     {
-        return $this->hasMany(User::class)->where('user_type', 'branch_manager');
+        return $this->belongsToMany(User::class, 'branch_managers')
+                    ->where('user_type', 'branch_manager')
+                    ->withPivot('is_active')
+                    ->withTimestamps();
     }
 
     public function schedules(): HasMany
@@ -116,9 +124,16 @@ class Branch extends Model
         return $this->hasMany(GiftVoucher::class);
     }
 
-    public function payments(): HasMany
+    public function payments()
     {
-        return $this->hasMany(Payment::class);
+        return $this->hasManyThrough(
+            Payment::class,
+            Booking::class,
+            'branch_id', // Foreign key on bookings table
+            'booking_id', // Foreign key on payments table
+            'id', // Local key on branches table
+            'id' // Local key on bookings table
+        );
     }
 
     public function expenses(): HasMany
@@ -134,6 +149,43 @@ class Branch extends Model
     public function posTransactions(): HasMany
     {
         return $this->hasMany(PosTransaction::class);
+    }
+
+    public function timeSlots(): HasMany
+    {
+        return $this->hasMany(TimeSlot::class);
+    }
+
+    public function commissionStructures(): HasMany
+    {
+        return $this->hasMany(CommissionStructure::class);
+    }
+
+    public function staffCommissions(): HasMany
+    {
+        return $this->hasMany(StaffCommission::class);
+    }
+
+    public function membershipTiers(): HasMany
+    {
+        return $this->hasMany(MembershipTier::class);
+    }
+
+    public function clientMemberships(): HasMany
+    {
+        return $this->hasMany(ClientMembership::class);
+    }
+
+    public function subscriptionPayments(): HasManyThrough
+    {
+        return $this->hasManyThrough(
+            SubscriptionPayment::class,
+            Subscription::class,
+            'user_id', // Foreign key on subscriptions table
+            'subscription_id', // Foreign key on subscription_payments table
+            'user_id', // Local key on branches table
+            'id' // Local key on subscriptions table
+        );
     }
 
     // Helper methods for ecommerce

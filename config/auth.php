@@ -40,6 +40,10 @@ return [
             'driver' => 'session',
             'provider' => 'users',
         ],
+        'branch_manager' => [
+            'driver' => 'session',
+            'provider' => 'branch_managers',
+        ],
     ],
 
     /*
@@ -64,11 +68,10 @@ return [
             'driver' => 'eloquent',
             'model' => env('AUTH_MODEL', App\Models\User::class),
         ],
-
-        // 'users' => [
-        //     'driver' => 'database',
-        //     'table' => 'users',
-        // ],
+        'branch_managers' => [
+            'driver' => 'eloquent',
+            'model' => App\Models\BranchManager::class,
+        ],
     ],
 
     /*

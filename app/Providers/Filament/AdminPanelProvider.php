@@ -27,6 +27,7 @@ class AdminPanelProvider extends PanelProvider
             ->id('admin')
             ->path('admin')
             ->login()
+            ->authGuard('branch_manager')
             ->colors([
                 'primary' => Color::Cyan,
                 'success' => Color::Green,
@@ -62,6 +63,7 @@ class AdminPanelProvider extends PanelProvider
             ->tenant(Branch::class)
             ->tenantMiddleware([
                 \App\Http\Middleware\ApplyBranchScope::class,
+                \App\Http\Middleware\EnsureBranchSubscribed::class,
             ])
             ->profile()
             // ->databaseNotifications()

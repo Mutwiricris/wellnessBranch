@@ -2,17 +2,16 @@
 
 namespace App\Models;
 
-use App\Domain\Shared\Traits\HasBranchScope;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Factories\HasFactory;
 
 class Staff extends Model
 {
-    use HasBranchScope;
+    use HasFactory;
 
     protected $fillable = [
-        'branch_id',
         'name',
         'email',
         'phone',
@@ -22,13 +21,25 @@ class Staff extends Model
         'experience_years',
         'hourly_rate',
         'status',
-        'color'
+        'color',
+        // Payroll fields
+        'base_salary',
+        'payment_type',
+        'bank_name',
+        'bank_account_number',
+        'bank_branch',
+        'kra_pin',
+        'nssf_number',
+        'nhif_number',
+        'emergency_contact_name',
+        'emergency_contact_phone',
     ];
 
     protected $casts = [
         'specialties' => 'array',
         'experience_years' => 'integer',
-        'hourly_rate' => 'decimal:2'
+        'hourly_rate' => 'decimal:2',
+        'base_salary' => 'decimal:2',
     ];
 
     public function branches(): BelongsToMany
@@ -53,6 +64,21 @@ class Staff extends Model
     public function schedules(): HasMany
     {
         return $this->hasMany(StaffSchedule::class);
+    }
+
+    public function commissions(): HasMany
+    {
+        return $this->hasMany(StaffCommission::class);
+    }
+
+    public function commissionAssignments(): HasMany
+    {
+        return $this->hasMany(StaffCommissionAssignment::class);
+    }
+
+    public function payrollItems(): HasMany
+    {
+        return $this->hasMany(PayrollItem::class);
     }
 
     public function scopeActive($query)
@@ -127,36 +153,45 @@ class Staff extends Model
             ->avg('rating') ?? 0;
     }
     
-    public function getUtilizationRate($date = null)
+    public function getUtilizationRate($date = null): float
     {
         $date = $date ?? now()->toDateString();
         
-        // Get total available hours for the day
+        // Fix: Wrap orWhere in where() for proper grouping
         $schedule = $this->schedules()
-            ->where('date', $date)
-            ->orWhere(function($query) use ($date) {
-                $dayOfWeek = strtolower(now()->parse($date)->format('l'));
-                $query->where('day_of_week', $dayOfWeek)
-                      ->whereNull('date'); // Recurring schedule
+            ->where(function($query) use ($date) {
+                $query->where('date', $date)
+                      ->orWhere(function($q) use ($date) {
+                          $dayOfWeek = strtolower(\Carbon\Carbon::parse($date)->format('l'));
+                          $q->where('day_of_week', $dayOfWeek)
+                            ->whereNull('date');
+                      });
             })
             ->first();
             
         if (!$schedule) {
-            return 0;
+            return 0.0;
         }
         
-        $availableMinutes = $this->calculateMinutesBetween($schedule->start_time, $schedule->end_time);
+        $availableMinutes = $this->calculateMinutesBetween(
+            $schedule->start_time, 
+            $schedule->end_time
+        );
         
-        // Get booked hours for the day
+        if ($availableMinutes <= 0) {
+            return 0.0;
+        }
+        
         $bookedMinutes = $this->bookings()
             ->where('appointment_date', $date)
             ->whereIn('status', ['confirmed', 'in_progress', 'completed'])
             ->get()
-            ->sum(function($booking) {
-                return $this->calculateMinutesBetween($booking->start_time, $booking->end_time);
-            });
+            ->sum(fn($booking) => $this->calculateMinutesBetween(
+                $booking->start_time, 
+                $booking->end_time
+            ));
             
-        return $availableMinutes > 0 ? round(($bookedMinutes / $availableMinutes) * 100, 2) : 0;
+        return round(($bookedMinutes / $availableMinutes) * 100, 2);
     }
     
     private function calculateMinutesBetween($startTime, $endTime)

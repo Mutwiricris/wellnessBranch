@@ -601,7 +601,11 @@ class DiscountCouponResource extends Resource
 
     public static function getNavigationBadge(): ?string
     {
-        return static::getModel()::where('is_active', true)->count();
+        try {
+            return static::getModel()::where('status', 'active')->count();
+        } catch (\Exception $e) {
+            return null;
+        }
     }
 
     public static function getNavigationBadgeColor(): ?string

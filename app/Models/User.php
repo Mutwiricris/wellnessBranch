@@ -12,11 +12,57 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
 use Illuminate\Support\Str;
+use Illuminate\Support\Facades\DB;
 
 class User extends Authenticatable implements FilamentUser, HasTenants
 {
     /** @use HasFactory<\Database\Factories\UserFactory> */
     use HasFactory, Notifiable;
+
+    /**
+     * Send the password reset notification.
+     *
+     * @param  string  $token
+     * @return void
+     */
+    public function sendPasswordResetNotification($token)
+    {
+        $this->notify(new \App\Notifications\PasswordResetNotification($token));
+    }
+
+    /**
+     * Send the email verification notification.
+     *
+     * @return void
+     */
+    public function sendEmailVerificationNotification()
+    {
+        $this->notify(new \App\Notifications\VerifyEmailNotification());
+    }
+    
+    /**
+     * Disable automatic tenant scoping since users table doesn't have branch_id column
+     */
+    protected static $isTenantAware = false;
+
+    /**
+     * Boot the model and disable automatic tenant scoping
+     */
+    protected static function boot()
+    {
+        parent::boot();
+        
+        // Override any tenant global scope that might be applied automatically
+        static::addGlobalScope('tenant', function ($builder) {
+            // Empty scope - no tenant filtering for users
+        });
+
+        static::saving(function ($user) {
+            if ($user->first_name || $user->last_name) {
+                $user->name = trim($user->first_name . ' ' . $user->last_name);
+            }
+        });
+    }
 
     /**
      * The attributes that are mass assignable.
@@ -29,7 +75,6 @@ class User extends Authenticatable implements FilamentUser, HasTenants
         'email_verified_at',
         'password',
         'user_type',
-        'branch_id',
         'first_name',
         'last_name', 
         'phone',
@@ -39,6 +84,7 @@ class User extends Authenticatable implements FilamentUser, HasTenants
         'preferences',
         'marketing_consent',
         'create_account_status',
+        'onboarding_completed',
     ];
 
     /**
@@ -64,6 +110,7 @@ class User extends Authenticatable implements FilamentUser, HasTenants
             'date_of_birth' => 'date',
             'preferences' => 'array',
             'marketing_consent' => 'boolean',
+            'onboarding_completed' => 'boolean',
         ];
     }
 
@@ -75,12 +122,21 @@ class User extends Authenticatable implements FilamentUser, HasTenants
         return $this->hasMany(Booking::class, 'client_id');
     }
 
+
     /**
-     * Get the branch this user manages (for branch managers)
+     * Get the user's client memberships
      */
-    public function branch()
+    public function clientMemberships()
     {
-        return $this->belongsTo(Branch::class);
+        return $this->hasMany(ClientMembership::class, 'user_id');
+    }
+
+    /**
+     * Get the user's active client membership
+     */
+    public function activeMembership()
+    {
+        return $this->clientMemberships()->where('status', 'active')->latest()->first();
     }
 
     /**
@@ -126,7 +182,7 @@ class User extends Authenticatable implements FilamentUser, HasTenants
      */
     public function isAdmin(): bool
     {
-        return in_array($this->user_type, ['admin', 'director']);
+        return $this->user_type === 'admin';
     }
 
     /**
@@ -142,7 +198,7 @@ class User extends Authenticatable implements FilamentUser, HasTenants
      */
     public function isUser(): bool
     {
-        return $this->user_type === 'user' || $this->user_type === 'client';
+        return $this->user_type === 'user';
     }
 
     /**
@@ -154,11 +210,19 @@ class User extends Authenticatable implements FilamentUser, HasTenants
     }
 
     /**
+     * Check if user is director
+     */
+    public function isDirector(): bool
+    {
+        return $this->user_type === 'director';
+    }
+
+    /**
      * Check if user can login to admin area
      */
     public function canAccessAdmin(): bool
     {
-        return in_array($this->user_type, ['admin', 'staff', 'branch_manager', 'director']);
+        return in_array($this->user_type, ['admin', 'staff', 'branch_manager']);
     }
 
     /**
@@ -166,15 +230,18 @@ class User extends Authenticatable implements FilamentUser, HasTenants
      */
     public function canManageBranch(): bool
     {
-        return $this->user_type === 'branch_manager' && $this->branch_id;
+        return $this->user_type === 'branch_manager';
     }
 
     /**
      * Get the branch ID this user can manage
+     * Note: Branch managers are associated with branches through a separate mechanism
      */
     public function getManagedBranchId(): ?int
     {
-        return $this->isBranchManager() ? $this->branch_id : null;
+        // This would need to be implemented through a separate branch_managers table
+        // or another relationship mechanism since users don't have direct branch_id
+        return null;
     }
 
     /**
@@ -203,10 +270,31 @@ class User extends Authenticatable implements FilamentUser, HasTenants
 
     /**
      * Scope to get branch managers for a specific branch
+     * Note: This would need to be implemented through a separate relationship
      */
     public function scopeForBranch($query, $branchId)
     {
-        return $query->where('branch_id', $branchId);
+        // This would need to be implemented through a separate branch_managers table
+        // since users don't have direct branch_id column
+        return $query->whereRaw('1 = 0'); // Return empty result for now
+    }
+
+    /**
+     * Get the branches owned by this user (Directors)
+     */
+    public function ownedBranches()
+    {
+        return $this->hasMany(Branch::class, 'user_id');
+    }
+
+    /**
+     * Get the branches assigned to this user (Managers)
+     */
+    public function branches(): \Illuminate\Database\Eloquent\Relations\BelongsToMany
+    {
+        return $this->belongsToMany(Branch::class, 'branch_managers')
+                    ->withPivot('is_active')
+                    ->withTimestamps();
     }
 
     /**
@@ -214,8 +302,9 @@ class User extends Authenticatable implements FilamentUser, HasTenants
      */
     public function canAccessPanel(Panel $panel): bool
     {
-        if ($panel->getId() === 'admin') {
-            return $this->canAccessAdmin();
+        // Allow branch managers, directors, and admins to access the admin/director panel
+        if (in_array($panel->getId(), ['admin', 'director'])) {
+            return in_array($this->user_type, ['branch_manager', 'director', 'admin']);
         }
         
         return false;
@@ -238,26 +327,41 @@ class User extends Authenticatable implements FilamentUser, HasTenants
     }
 
     /**
+     * Get the user's current subscription
+     */
+    public function subscription()
+    {
+        return $this->hasOne(Subscription::class)->latestOfMany();
+    }
+
+    /**
+     * Check if the user has an active subscription
+     */
+    public function hasActiveSubscription(): bool
+    {
+        return $this->subscription?->isActive() ?? false;
+    }
+
+    /**
      * Get the tenants (branches) that this user can access
      */
-    public function getTenants(Panel $panel): Collection
+    public function getTenants(?Panel $panel = null): \Illuminate\Database\Eloquent\Collection
     {
-        // Admins can access all active branches
-        if ($this->isAdmin()) {
-            return Branch::active()->get();
+        // If panel is null, we still want to return all accessible branches
+        // Directors and admins can access their owned branches
+        if (in_array($this->user_type, ['director', 'admin'])) {
+            return Branch::where('user_id', $this->id)->active()->get();
         }
-
-        // Branch managers can only access their assigned branch
-        if ($this->isBranchManager() && $this->branch_id) {
-            return Branch::where('id', $this->branch_id)->active()->get();
+        
+        // Branch managers can only access their assigned branches
+        // Check if there's a pivot relationship via branch_managers table
+        if ($this->user_type === 'branch_manager') {
+            return Branch::whereHas('managers', function ($query) {
+                $query->where('user_id', $this->id);
+            })->active()->get();
         }
-
-        // Staff can access their assigned branch
-        if ($this->isStaff() && $this->branch_id) {
-            return Branch::where('id', $this->branch_id)->active()->get();
-        }
-
-        return new Collection();
+        
+        return Branch::query()->whereRaw('1 = 0')->get(); // Empty collection
     }
 
     /**
@@ -270,14 +374,18 @@ class User extends Authenticatable implements FilamentUser, HasTenants
             return false;
         }
         
-        // Admins can access any branch
-        if ($this->isAdmin()) {
-            return true;
+        // Directors and admins can access their owned branches
+        if (in_array($this->user_type, ['director', 'admin'])) {
+            return $tenant->user_id === $this->id && $tenant->status === 'active';
         }
-
-        // Branch managers and staff can only access their assigned branch
-        if (in_array($this->user_type, ['branch_manager', 'staff'])) {
-            return $this->branch_id === $tenant->id;
+        
+        // Branch managers can only access their assigned branches
+        if ($this->user_type === 'branch_manager') {
+            return DB::table('branch_managers')
+                ->where('branch_id', $tenant->id)
+                ->where('user_id', $this->id)
+                ->where('is_active', true)
+                ->exists();
         }
         
         return false;

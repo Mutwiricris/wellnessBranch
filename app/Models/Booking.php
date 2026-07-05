@@ -2,20 +2,24 @@
 
 namespace App\Models;
 
-use App\Domain\Shared\Traits\HasBranchScope;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasOne;
 use Illuminate\Support\Str;
+use Illuminate\Support\Facades\DB;
+
+use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class Booking extends Model
 {
-    use HasBranchScope;
     protected $fillable = [
         'booking_reference',
+        'booking_type',
         'branch_id',
         'service_id',
         'client_id',
+        'customer_name',
+        'customer_phone',
         'staff_id',
         'appointment_date',
         'start_time',
@@ -28,7 +32,11 @@ class Booking extends Model
         'mpesa_transaction_id',
         'cancellation_reason',
         'cancelled_at',
-        'confirmed_at'
+        'confirmed_at',
+        'service_started_at',
+        'service_completed_at',
+        'rating',
+        'review'
     ];
 
     protected $casts = [
@@ -36,6 +44,9 @@ class Booking extends Model
         'total_amount' => 'decimal:2',
         'cancelled_at' => 'datetime',
         'confirmed_at' => 'datetime',
+        'service_started_at' => 'datetime',
+        'service_completed_at' => 'datetime',
+        'rating' => 'integer',
     ];
     
     // Handle time fields manually to avoid casting issues
@@ -43,6 +54,8 @@ class Booking extends Model
         'appointment_date',
         'cancelled_at',
         'confirmed_at',
+        'service_started_at',
+        'service_completed_at',
         'created_at',
         'updated_at'
     ];
@@ -66,6 +79,11 @@ class Booking extends Model
     public function service(): BelongsTo
     {
         return $this->belongsTo(Service::class);
+    }
+
+    public function payments(): HasMany
+    {
+        return $this->hasMany(Payment::class);
     }
 
     public function client(): BelongsTo
@@ -119,6 +137,16 @@ class Booking extends Model
         return $this->status === 'cancelled';
     }
 
+    public function isInProgress(): bool
+    {
+        return $this->status === 'in_progress';
+    }
+
+    public function isCompleted(): bool
+    {
+        return $this->status === 'completed';
+    }
+
     public function canBeCancelled(): bool
     {
         return in_array($this->status, ['pending', 'confirmed']) && 
@@ -127,14 +155,23 @@ class Booking extends Model
 
     public function canBeStarted(): bool
     {
-        return $this->status === 'confirmed' && 
-               $this->appointment_date <= now()->toDateString() &&
+        return $this->status === 'confirmed' &&
+               $this->appointment_date->isToday() &&
                $this->hasValidPayment();
     }
 
     public function canBeCompleted(): bool
     {
         return $this->status === 'in_progress' &&
+               $this->hasValidPayment() &&
+               $this->service_started_at !== null;
+    }
+    
+    // Allow direct completion for exceptional cases (e.g., walk-ins, past appointments)
+    public function canBeCompletedDirectly(): bool
+    {
+        return $this->status === 'confirmed' &&
+               $this->appointment_date->isPast() &&
                $this->hasValidPayment();
     }
     
@@ -186,27 +223,29 @@ class Booking extends Model
 
     public function updateStatusWithPayment(string $status): void
     {
-        $oldStatus = $this->status;
-        $this->update(['status' => $status]);
-        
-        // Auto-update payment status based on booking status
-        if ($this->payment) {
-            if ($status === 'completed' && $this->payment->isPending()) {
-                $this->payment->markAsCompleted();
-                $this->update(['payment_status' => 'completed']);
-            } elseif ($status === 'cancelled' && $this->payment->isPending()) {
-                $this->payment->markAsFailed();
-                $this->update(['payment_status' => 'failed']);
+        DB::transaction(function () use ($status) {
+            $oldStatus = $this->status;
+            $this->update(['status' => $status]);
+            
+            // Auto-update payment status based on booking status
+            if ($this->payment) {
+                if ($status === 'completed' && $this->payment->isPending()) {
+                    $this->payment->markAsCompleted();
+                    $this->update(['payment_status' => 'completed']);
+                } elseif ($status === 'cancelled' && $this->payment->isPending()) {
+                    $this->payment->markAsFailed();
+                    $this->update(['payment_status' => 'failed']);
+                }
+            } else {
+                // If no payment record exists, create one for completed services
+                if ($status === 'completed') {
+                    $this->createPaymentRecord();
+                }
             }
-        } else {
-            // If no payment record exists, create one for completed services
-            if ($status === 'completed') {
-                $this->createPaymentRecord();
-            }
-        }
-        
-        // Set timestamp fields based on status changes
-        $this->updateStatusTimestamps($status, $oldStatus);
+            
+            // Set timestamp fields based on status changes
+            $this->updateStatusTimestamps($status, $oldStatus);
+        });
     }
 
     private function generateBookingReference(): string
@@ -234,9 +273,9 @@ class Booking extends Model
     {
         Payment::create([
             'booking_id' => $this->id,
-            'branch_id' => $this->branch_id,
             'amount' => $this->total_amount,
             'payment_method' => $this->payment_method ?? 'cash',
+            'payment_category' => 'booking',
             'status' => 'completed',
             'processed_at' => now()
         ]);
@@ -303,26 +342,6 @@ class Booking extends Model
                $this->payment_status !== 'refunded';
     }
     
-    // public function requiresPayment(): bool
-    // {
-    //     return $this->status === 'completed' && $this->payment_status === 'pending';
-    // }
-    
-    // public function hasValidPayment(): bool
-    // {
-    //     return $this->payment_status === 'completed' && $this->payment;
-    // }
-    
-    // public function canBeConfirmed(): bool
-    // {
-    //     return $this->status === 'pending' && $this->hasValidPayment();
-    // }
-    
-    // public function canBeCompletedWithPayment(): bool
-    // {
-    //     return $this->status === 'in_progress' && $this->hasValidPayment();
-    // }
-    
     public function needsPaymentBeforeConfirmation(): bool
     {
         return $this->status === 'pending' && !$this->hasValidPayment();
@@ -331,5 +350,68 @@ class Booking extends Model
     public function needsPaymentBeforeCompletion(): bool
     {
         return $this->status === 'in_progress' && !$this->hasValidPayment();
+    }
+
+    /**
+     * Start the service for this booking
+     */
+    public function startService(): bool
+    {
+        if (!$this->canBeStarted()) {
+            return false;
+        }
+
+        $this->update([
+            'status' => 'in_progress',
+            'service_started_at' => now(),
+        ]);
+
+        return true;
+    }
+
+    /**
+     * Complete the service for this booking
+     */
+    public function completeService(): bool
+    {
+        if (!$this->canBeCompleted()) {
+            return false;
+        }
+
+        $this->update([
+            'status' => 'completed',
+            'service_completed_at' => now(),
+        ]);
+
+        return true;
+    }
+
+    /**
+     * Get the service duration in minutes
+     */
+    public function getServiceDuration(): ?int
+    {
+        if (!$this->service_started_at || !$this->service_completed_at) {
+            return null;
+        }
+
+        $minutes = $this->service_started_at->diffInMinutes($this->service_completed_at);
+        // If less than 1 minute, return 1 to show some duration
+        return max(1, $minutes);
+    }
+
+    /**
+     * Get booking status options for forms
+     */
+    public static function getStatusOptions(): array
+    {
+        return [
+            'pending' => 'Pending',
+            'confirmed' => 'Confirmed', 
+            'in_progress' => 'In Progress',
+            'completed' => 'Completed',
+            'cancelled' => 'Cancelled',
+            'no_show' => 'No Show'
+        ];
     }
 }
