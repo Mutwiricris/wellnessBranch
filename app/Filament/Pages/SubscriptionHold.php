@@ -100,6 +100,27 @@ class SubscriptionHold extends Page
                 ]);
             }
 
+            // If the plan is free, activate directly
+            if ($plan->price <= 0) {
+                $subscription->update([
+                    'status' => 'active',
+                    'ends_at' => null,
+                ]);
+
+                $this->paymentStatus = 'success';
+                $this->paymentMessage = 'Free plan activated successfully! Redirecting...';
+                
+                Notification::make()
+                    ->success()
+                    ->title('Plan Activated')
+                    ->body('Your free plan has been activated successfully.')
+                    ->send();
+
+                $this->isProcessing = false;
+                $this->redirect(route('filament.admin.pages.dashboard', ['tenant' => $tenant]));
+                return;
+            }
+
             $mpesaService = app(MpesaService::class);
             $response = $mpesaService->stkPush(
                 $this->mpesaPhone,

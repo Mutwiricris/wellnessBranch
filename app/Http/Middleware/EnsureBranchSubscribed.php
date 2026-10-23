@@ -20,13 +20,13 @@ class EnsureBranchSubscribed
             $owner = $tenant->owner;
             
             // If the route name is subscription-hold, let it pass
-            if ($request->routeIs('filament.admin.tenant.pages.subscription-hold') || 
+            if ($request->routeIs('filament.admin.pages.subscription-hold') || 
                 str_contains($request->route()?->getName() ?? '', 'subscription-hold')) {
                 return $next($request);
             }
 
             if (!$owner || !$owner->hasActiveSubscription()) {
-                return redirect()->route('filament.admin.tenant.pages.subscription-hold', ['tenant' => $tenant]);
+                return redirect()->route('filament.admin.pages.subscription-hold', ['tenant' => $tenant]);
             }
         }
 

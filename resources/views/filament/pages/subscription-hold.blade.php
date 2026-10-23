@@ -16,7 +16,7 @@
             </div>
         </div>
 
-        @if (auth()->user()->isDirector() || auth()->user()->isAdmin() || (Filament::getTenant() && Filament::getTenant()->user_id === auth()->id()))
+        @if (auth()->user()->isDirector() || auth()->user()->isAdmin() || (\Filament\Facades\Filament::getTenant() && \Filament\Facades\Filament::getTenant()->user_id === auth()->id()))
             {{-- Director Interface --}}
             <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
                 {{-- Pricing Grid (2/3 width) --}}
